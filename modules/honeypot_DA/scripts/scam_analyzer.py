@@ -1076,13 +1076,15 @@ class ScamAnalyzer:
         standardized_result = {
             "token_addr_idx": self.token_idx,
             "verified": self.is_verified,
-            "buy": {
-                "result": buy_result
-            },
-            "sell":{
-                "result":sell_result,
-                "fail_type": fail_type,
-            },
+            "buy_1": buy_result[0],
+            "buy_2": buy_result[1],
+            "buy_3": buy_result[2],
+            "sell_1": sell_result[0],
+            "sell_2": sell_result[1],
+            "sell_3": sell_result[2],
+            "sell_fail_type_1": fail_type[0],
+            "sell_fail_type_2": fail_type[1],
+            "sell_fail_type_3": fail_type[2],
             "trading_suspend_check": format_scenario_result("trading_suspend"),
             "exterior_call_check": format_scenario_result("exterior_function_call"),
             "unlimited_mint": format_scenario_result("unlimited_mint"),

@@ -467,6 +467,17 @@ class HoneypotDaResult(models.Model):
     verified = models.BooleanField(
         help_text="Contract verified on Etherscan"
     )
+    buy_1 = models.BooleanField()
+    buy_2 = models.BooleanField()
+    buy_3 = models.BooleanField()
+
+    sell_1 = models.BooleanField()
+    sell_2 = models.BooleanField()
+    sell_3 = models.BooleanField()
+
+    sell_fail_type_1 = models.IntegerField()
+    sell_fail_type_2 = models.IntegerField()
+    sell_fail_type_3 = models.IntegerField()
 
     # Trading suspend check
     trading_suspend_result = models.BooleanField()
