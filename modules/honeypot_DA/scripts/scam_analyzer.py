@@ -10,7 +10,6 @@ import os
 import requests
 from datetime import datetime
 from pathlib import Path
-from input_parser import parse_csv 
 from brownie import accounts, chain,network,Contract,project, web3
 from brownie.network import gas_price
 from eth_utils import to_checksum_address
@@ -82,18 +81,19 @@ QUOTE_TOKEN_DECIMALS = {
 INITIAL_ETH_LIQUIDITY = 10.0
 INITIAL_TOKEN_LIQUIDITY = 1_000_000
 
-# ABI Json File Path
-TOKEN_ABI_JSON = "interfaces/IERC20.json"
-PAIR_ABI_JSON = "interfaces/IUniswapV2Pair.json"
-ROUTER_ABI_JSON = "interfaces/IUniswapV2Router02.json"
-FACTORY_ABI_JSON = "interfaces/IUniswapV2Factory.json"
-WETH_ABI_JSON = "interfaces/IWETH.json"
-EXTENDED_ABI_JSON = "interfaces/IExtendedERC20.json"
+# ABI Json File Path (resolve relative to module root so cwd doesn't matter)
+BASE_DIR = Path(__file__).parent.parent
+TOKEN_ABI_JSON = BASE_DIR / "interfaces" / "IERC20.json"
+PAIR_ABI_JSON = BASE_DIR / "interfaces" / "IUniswapV2Pair.json"
+ROUTER_ABI_JSON = BASE_DIR / "interfaces" / "IUniswapV2Router02.json"
+FACTORY_ABI_JSON = BASE_DIR / "interfaces" / "IUniswapV2Factory.json"
+WETH_ABI_JSON = BASE_DIR / "interfaces" / "IWETH.json"
+EXTENDED_ABI_JSON = BASE_DIR / "interfaces" / "IExtendedERC20.json"
 
-V3_POOL_ABI_JSON = "interfaces/IUniswapV3Pool.json"
-V3_FACTORY_ABI_JSON = "interfaces/IUniswapV3Factory.json"
-V3_SWAP_ROUTER_ABI_JSON = "interfaces/IUniswapV3SwapRouter.json"
-V3_QUOTER_ABI_JSON = "interfaces/IQuoterV2.json"
+V3_POOL_ABI_JSON = BASE_DIR / "interfaces" / "IUniswapV3Pool.json"
+V3_FACTORY_ABI_JSON = BASE_DIR / "interfaces" / "IUniswapV3Factory.json"
+V3_SWAP_ROUTER_ABI_JSON = BASE_DIR / "interfaces" / "IUniswapV3SwapRouter.json"
+V3_QUOTER_ABI_JSON = BASE_DIR / "interfaces" / "IQuoterV2.json"
 
 # Honeypot detection thresholds
 THRESHOLDS = {
@@ -168,7 +168,7 @@ def set_rpc_timeout(seconds=120):
 class ScamAnalyzer:
     """허니팟 탐지 클래스"""
 
-    def __init__(self, token_address, token_idx, service,blocknum,pair_addr,pair_creator=None,results=None, holder_csv_path=None):
+    def __init__(self, token_address, token_idx, service,blocknum,pair_addr,pair_creator=None,results=None, holders=None):
         """
         초기화
 
@@ -224,10 +224,7 @@ class ScamAnalyzer:
         self.quote_token_decimals = 18
         self.eth_usd_price = None  # cached 1 WETH -> USD estimate
         self.gaslimit = web3.eth.get_block(blocknum)["gasLimit"]
-        self.holder_csv_path = holder_csv_path
-
-        self.dex_version = None
-        self.fee_tier = None
+        self.holders = holders or []
 
         if results is not None:
             self.results = results
@@ -827,7 +824,7 @@ class ScamAnalyzer:
         self.analyze_results()
 
         # 2. Existing Holders Sell Test
-        if self.holder_csv_path:
+        if self.holders:
             print(f"\n{'#'*60}")
             print("# Scenario 2: Existing Holders Sell Test")
             print(f"{'#'*60}")
@@ -1113,7 +1110,7 @@ def main():
     load_dotenv()
     """메인 함수 - .env 기반 단일 토큰 검사"""
     # DB 로드
-    from api.models import TokenInfo
+    from api.models import HolderInfo, TokenInfo
 
     network.rpc._revert_trace = False
     # w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
@@ -1130,8 +1127,8 @@ def main():
         token_info_obj = TokenInfo.objects.get(id=token_addr_idx)
     except TokenInfo.DoesNotExist:
         print(f"Error: TokenInfo with id {token_addr_idx} not found")
-        return   
-    
+        return
+
     print(f"\n{'='*60}")
     print(f"분석 시작: Token #{token_addr_idx}")
     print(f"{'='*60}\n") 
@@ -1149,7 +1146,14 @@ def main():
 
         pair_creator = token_info_obj.pair_creator
         token_address = token_info_obj.token_addr
-
+        holder_entries = [
+            {
+                "holder_address": h.holder_addr,
+                "balance_decimal": str(h.balance),
+                "relative_share": h.rel_to_total,
+            }
+            for h in HolderInfo.objects.filter(token_info=token_info_obj).order_by("-balance")[:20]
+        ]
     
         # Validation: 필수 정보 체크
         if not token_address:
@@ -1215,7 +1219,7 @@ def main():
                 block_number,
                 pair_addr,
                 pair_creator,
-                holder_csv_path=None,
+                holders=holder_entries,
             )
             results = detector.run_tests()
 

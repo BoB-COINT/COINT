@@ -17,24 +17,14 @@ TARGET_GAS_BALANCE = int(12 * 10 ** 18)  # Ensure holders end up with ~12 ETH
 
 
 def _get_eoa_holders(detector, limit=3):
-    """Holder CSV에서 EOA 홀더 목록을 추려 반환"""
-    csv_path = getattr(detector, "holder_csv_path", None)
-    if not csv_path:
-        return []
-
-    try:
-        holders = utils.load_holders(csv_path, detector.token_address)
-    except Exception as exc:
-        print(f"? Holder CSV load failed: {exc}")
-        return []
-
-    if not holders:
-        print("? Holder 정보 없음.")
+    """DB에서 전달된 holder 목록 중 EOA만 추려 반환"""
+    holder_entries = getattr(detector, "holders", None) or []
+    if not holder_entries:
         return []
 
     eoa_holders = []
-    for holder in holders:
-        address = holder.get("holder_address")
+    for holder in holder_entries:
+        address = holder.get("holder_address") or holder.get("holder_addr")
         if not address:
             continue
 
@@ -45,7 +35,7 @@ def _get_eoa_holders(detector, limit=3):
 
         try:
             code = network.web3.eth.get_code(checksum_addr)
-        except Exception as exc:
+        except Exception:
             continue
 
         if code:
@@ -95,7 +85,7 @@ def run_scenario(detector):
 
     holder_entries = _get_eoa_holders(detector, limit=3)
     if not holder_entries:
-        result["reason"] = "Holder CSV 데이터가 없거나 일치하는 주소를 찾지 못했습니다."
+        result["reason"] = "DB에서 holder 정보를 찾지 못했습니다."
         return result
     
     try:
@@ -116,8 +106,8 @@ def run_scenario(detector):
             chain.snapshot()
             holder_record = {
                 "address": checksum_addr,
-                "csv_balance": str(holder.get("balance_decimal")),
-                "relative_share": str(holder.get("relative_share")),
+                "db_balance": str(holder.get("balance_decimal") or holder.get("balance")),
+                "relative_share": str(holder.get("relative_share") or holder.get("rel_to_total")),
             }
 
             try:
