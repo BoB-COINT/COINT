@@ -22,12 +22,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 PRECOMPILES = {f"0x{n:040x}" for n in range(1, 10)}  # 0x1 ~ 0x9
+EIP1967_IMPLEMENTATION_SLOT = int("0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc", 16)
+
+# Cache proxy implementation lookups to avoid repeated storage reads
+_IMPLEMENTATION_CACHE = {}
+# Hints injected by analyzer (e.g., already discovered implementation address)
+_IMPLEMENTATION_HINTS = {}
 
 # Known DEX addresses (routers and factories) - not suspicious
 KNOWN_DEX_ADDRESSES = {
     # Routers
     "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",  # UniswapV2
     "0xf164fC0Ec4E93095b804a4795bBe1e041497b92a",  # UniswapV2_Old
+    "0xe592427a0aece92de3edee1f18e0157c05861564",  # UniswapV3
     "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F",  # SushiswapV2
     "0x03f7724180AA6b939894B5Ca4314783B0b36b329",  # ShibaswapV1
     "0xEfF92A263d31888d860bD50809A8D171709b7b1c",  # PancakeV2
@@ -35,34 +42,78 @@ KNOWN_DEX_ADDRESSES = {
     "0x463672ffdED540f7613d3e8248e3a8a51bAF7217",  # Whiteswap
     # Factories
     "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",  # UniswapV2
+    "0x1F98431c8aD98523631AE4a59f267346ea31F984",  # UniswapV3
     "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac",  # SushiswapV2
     "0x1097053Fd2ea711dad45caCcc45EfF7548fCB362",  # PancakeV2
     "0x115934131916C8b277DD010Ee02de363c09d037c",  # ShibaswapV1
     "0x43eC799eAdd63848443E2347C49f5f52e8Fe0F6f",  # Fraxswap
     "0x69bd16aE6F507bd3Fc9eCC984d50b04F029EF677",  # Whiteswap
+	# Major Tokens
+	"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", # WETH
+	"0xdAC17F958D2ee523a2206206994597C13D831ec7", # USDT
+    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", # USDC
+    "0x6B175474E89094C44Da98b954EedeAC495271d0F", # DAI
 }
 
-def is_suspicious_external_call(addr: str, token_address: str) -> bool:
+
+def _get_proxy_impl(token_address: str):
+    """Return implementation address for EIP-1967 proxy if present (cached)."""
+    key = token_address.lower()
+    hinted = _IMPLEMENTATION_HINTS.get(key)
+    if hinted:
+        return hinted
+    if key in _IMPLEMENTATION_CACHE:
+        return _IMPLEMENTATION_CACHE[key]
+
+    impl = None
+    try:
+        raw = web3.eth.get_storage_at(token_address, EIP1967_IMPLEMENTATION_SLOT)
+        if raw and any(raw):
+            candidate = "0x" + raw[-20:].hex()
+            if candidate.lower() != "0x" + "0" * 40:
+                impl = to_checksum_address(candidate)
+    except Exception:
+        impl = None
+
+    _IMPLEMENTATION_CACHE[key] = impl
+    return impl
+
+
+def is_suspicious_external_call(addr: str, token_address: str, impl_address: str = None, exclude_addresses=None) -> bool:
     """
     Check if a call to the given address is suspicious.
 
     Args:
         addr: Address being called
         token_address: The token contract address (to exclude self-calls)
+        exclude_addresses: Additional addresses to skip (e.g., selected pair)
 
     Returns:
         True if the call is suspicious, False otherwise
 
     Excludes:
         - Self-calls (token calling itself)
+        - Proxy implementation self-calls (EIP-1967)
+        - Addresses explicitly excluded by the analyzer (e.g., liquidity pool)
         - Known DEX routers and factories
         - Precompiled contracts
     """
     checksum = to_checksum_address(addr)
     token_checksum = to_checksum_address(token_address)
+    impl_checksum = impl_address or _get_proxy_impl(token_checksum) or token_checksum
+
+    skip_set = {token_checksum.lower(), impl_checksum.lower()}
+    if exclude_addresses:
+        for extra in exclude_addresses:
+            if not extra:
+                continue
+            try:
+                skip_set.add(to_checksum_address(extra).lower())
+            except Exception:
+                continue
 
     # 1. Exclude self-calls
-    if checksum.lower() == token_checksum.lower():
+    if checksum.lower() in skip_set:
         return False
 
     # 2. Exclude known DEX addresses
@@ -98,7 +149,11 @@ def trace_tx(txhash: str, tracer_type="callTracer"):
         raise RuntimeError(result["error"])
     return result["result"]
 
-def extract_calls_from_call_tracer(call_frame, token_address, depth=0, calls=None, is_root=True):
+MAX_TRACE_DEPTH = 8
+MAX_TRACE_CALLS = 200
+
+
+def extract_calls_from_call_tracer(call_frame, token_address, depth=0, calls=None, is_root=True, max_depth=MAX_TRACE_DEPTH, max_calls=MAX_TRACE_CALLS, exclude_addresses=None):
     """
     Extract suspicious external calls from callTracer output recursively.
 
@@ -108,9 +163,15 @@ def extract_calls_from_call_tracer(call_frame, token_address, depth=0, calls=Non
         depth: Current call depth
         calls: Accumulated calls list
         is_root: Whether this is the root call (transfer itself)
+        max_depth: Maximum recursion depth to avoid runaway traces
+        max_calls: Maximum number of calls to collect
+        exclude_addresses: Additional addresses that should be ignored
     """
     if calls is None:
         calls = []
+
+    if depth > max_depth or len(calls) >= max_calls:
+        return calls
 
     call_type = call_frame.get("type", "CALL").upper()
     to_addr = call_frame.get("to", "")
@@ -122,7 +183,12 @@ def extract_calls_from_call_tracer(call_frame, token_address, depth=0, calls=Non
     # Skip root call (the transfer itself), precompiles, and non-suspicious calls
     # Only add nested calls from within the transfer execution
     if not is_root and to_addr and to_addr.lower() not in PRECOMPILES:
-        if is_suspicious_external_call(to_addr, token_address):
+        if is_suspicious_external_call(
+            to_addr,
+            token_address,
+            impl_address=_IMPLEMENTATION_HINTS.get(token_address.lower()),
+            exclude_addresses=exclude_addresses,
+        ):
             # Ensure we capture all call types
             if call_type in ["CALL", "DELEGATECALL", "STATICCALL", "CALLCODE"]:
                 calls.append({
@@ -135,7 +201,18 @@ def extract_calls_from_call_tracer(call_frame, token_address, depth=0, calls=Non
 
     # Recursively process nested calls
     for subcall in call_frame.get("calls", []):
-        extract_calls_from_call_tracer(subcall, token_address, depth + 1, calls, is_root=False)
+        if len(calls) >= max_calls:
+            break
+        extract_calls_from_call_tracer(
+            subcall,
+            token_address,
+            depth + 1,
+            calls,
+            is_root=False,
+            max_depth=max_depth,
+            max_calls=max_calls,
+            exclude_addresses=exclude_addresses,
+        )
 
     return calls
 
@@ -168,7 +245,7 @@ def ensure_eth_balance(account, min_balance_wei, funder):
         return False
 
 
-def analyze_transfer(token, sender, recipient, amount,gas_limit):
+def analyze_transfer(token, sender, recipient, amount,gas_limit, excluded_addresses=None):
     """
     Execute token.transfer and return the transaction plus external call frames.
     """
@@ -176,6 +253,8 @@ def analyze_transfer(token, sender, recipient, amount,gas_limit):
     reverted = False
     try:
         tx = token.transfer(recipient, amount, {"from": sender,"gas_limit":gas_limit})
+        network.web3.provider.make_request("anvil_mine", [1])
+        tx.wait(1)
         reverted = tx.status != 1
     except (VirtualMachineError, ValueError) as exc:
         tx = getattr(exc, "tx", None)
@@ -191,7 +270,11 @@ def analyze_transfer(token, sender, recipient, amount,gas_limit):
 
     # Extract suspicious external calls using callTracer
     call_trace = trace_tx(tx.txid, tracer_type="callTracer")
-    external_calls = extract_calls_from_call_tracer(call_trace, token.address)
+    external_calls = extract_calls_from_call_tracer(
+        call_trace,
+        token.address,
+        exclude_addresses=excluded_addresses,
+    )
 
     # 외부 컨트랙트 호출 요약
     print(f"\n{'='*120}")
@@ -225,7 +308,7 @@ def parse_amount(amount_str, decimals):
 def run_scenario(analyzer):
     """Run the exterior function call scenario."""
     print(f"\n{'='*60}")
-    print("시나리오 3: Exterior Function Call Tracer")
+    print("시나리오 4: Exterior Function Call Tracer")
     print(f"{'='*60}\n")
     gas_limit = analyzer.gaslimit
     network.gas_limit(analyzer.gaslimit)
@@ -234,21 +317,47 @@ def run_scenario(analyzer):
         decimals = analyzer.token.decimals()
     except Exception:
         decimals = 18
+    # Provide implementation hint from analyzer (if already resolved)
+    try:
+        impl_hint = getattr(analyzer, "implementation_address", None)
+        if impl_hint:
+            _IMPLEMENTATION_HINTS[analyzer.token_address.lower()] = impl_hint
+    except Exception:
+        pass
 
     target_ratio = Decimal("0.005")
 
     token_reserve_raw = None
     pair_address = getattr(analyzer, "pair_address", None)
+    excluded_addresses = set()
+    if pair_address:
+        excluded_addresses.add(pair_address)
 
     if pair_address:
         try:
-            pair_contract = Contract.from_abi("IUniswapV2Pair", pair_address, analyzer.pair_abi)
-            reserves = pair_contract.getReserves()
-            token0 = pair_contract.token0().lower()
-            token_address = analyzer.token.address.lower()
-            token_reserve_raw = reserves[0] if token0 == token_address else reserves[1]
+            if analyzer.dex_version == "v2":
+                pair_contract = Contract.from_abi("IUniswapV2Pair", pair_address, analyzer.pair_abi)
+                reserves = pair_contract.getReserves()
+                token0 = pair_contract.token0().lower()
+                token_address = analyzer.token.address.lower()
+                token_reserve_raw = reserves[0] if token0 == token_address else reserves[1]
+            elif analyzer.dex_version == "v3":
+                pool = Contract.from_abi("IUniswapV3Pool", analyzer.pair_address, analyzer.v3_pool_abi)
+                liquidity = pool.liquidity()
+                slot0 = pool.slot0()
+                sqrt_price_x96 = slot0[0]
+                token0 = pool.token0().lower()
+                is_token0 = token0 == analyzer.token_address.lower()
+
+                if sqrt_price_x96 > 0:
+                    if is_token0:
+                        token_reserve_raw = int(liquidity / (sqrt_price_x96 / (2 ** 96)))
+                    else:
+                        token_reserve_raw = int(liquidity * (sqrt_price_x96 / (2 ** 96)))
+                else:
+                    token_reserve_raw = 0
         except Exception as exc:
-            print(f"[warn] Unable to read reserves from pair {pair_address}: {exc}")
+            print(f"[warn] Unable to read reserves from pool {pair_address}: {exc}")
 
     if token_reserve_raw:
         amount = max(1, int(Decimal(token_reserve_raw) * target_ratio))
@@ -335,7 +444,7 @@ def run_scenario(analyzer):
     recipient = accounts[5].address
     print(f"[info] Recipient: {recipient}")
 
-    result = analyze_transfer(analyzer.token, sender, recipient, amount,gas_limit)
+    result = analyze_transfer(analyzer.token, sender, recipient, amount,gas_limit, excluded_addresses=excluded_addresses)
 
     test_result = {
         "scenario": "exterior_function_call",

@@ -25,6 +25,9 @@ class TokenInfo(models.Model):
         max_length=42,
         help_text="Pair contract address"
     )
+    pair_creator = models.CharField(
+        max_length=42
+    )
     token_create_ts = models.DateTimeField(
         help_text="Token creation timestamp"
     )
@@ -55,11 +58,6 @@ class TokenInfo(models.Model):
         blank=True,
         null=True,
         help_text="Token name"
-    )
-    holder_cnt = models.IntegerField(
-        blank=True,
-        null=True,
-        help_text="Total number of token holders"
     )
 
     class Meta:
@@ -470,43 +468,23 @@ class HoneypotDaResult(models.Model):
         help_text="Contract verified on Etherscan"
     )
 
-    # Buy/Sell test
-    buy_sell_result = models.BooleanField(
-        help_text="Buy and sell both successful"
-    )
-    buy_sell_return_rate = models.FloatField(
-        null=True,
-        blank=True,
-        help_text="Return rate percentage (0-100)"
-    )
-
-    # Blacklist check
-    blacklist_result = models.BooleanField()
-    blacklist_confidence = models.CharField(max_length=10)
-
     # Trading suspend check
     trading_suspend_result = models.BooleanField()
-    trading_suspend_confidence = models.CharField(max_length=10)
 
     # Exterior call check
     exterior_call_result = models.BooleanField()
-    exterior_call_confidence = models.CharField(max_length=10)
 
     # Unlimited mint
     unlimited_mint_result = models.BooleanField()
-    unlimited_mint_confidence = models.CharField(max_length=10)
 
     # Balance manipulation
     balance_manipulation_result = models.BooleanField()
-    balance_manipulation_confidence = models.CharField(max_length=10)
 
     # Tax manipulation
     tax_manipulation_result = models.BooleanField()
-    tax_manipulation_confidence = models.CharField(max_length=10)
 
     # Existing holders check
     existing_holders_result = models.BooleanField()
-    existing_holders_confidence = models.CharField(max_length=10)
 
     created_at = models.DateTimeField(default=timezone.now)
 

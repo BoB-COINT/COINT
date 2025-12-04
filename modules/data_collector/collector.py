@@ -42,7 +42,7 @@ ERC20_ABI = [
 class UnifiedDataCollector:
     """Collects token information, pair events, and holders from Ethereum blockchain."""
 
-    def __init__(self, rpc_url: str, etherscan_api_key: str, etherscan_api_url: str, moralis_api_key: str, chainbase_api_key: str):
+    def __init__(self, rpc_url: str, etherscan_api_key: str, etherscan_api_url: str, moralis_api_key: str):
         """
         Initialize the collector.
 
@@ -51,13 +51,11 @@ class UnifiedDataCollector:
             etherscan_api_key: Etherscan API key
             etherscan_api_url: Etherscan API URL
             moralis_api_key: Moralis API key
-            chainbase_api_key: Chainbase API key
         """
         self.web3 = Web3(Web3.HTTPProvider(rpc_url))
         self.etherscan_api_key = etherscan_api_key
         self.etherscan_api_url = etherscan_api_url
         self.moralis_api_key = moralis_api_key
-        self.chainbase_api_key = chainbase_api_key
 
         if not self.web3.is_connected():
             raise ConnectionError("Failed to connect to Ethereum node")
@@ -127,19 +125,18 @@ class UnifiedDataCollector:
         # Build token_info
         token_create_ts, token_creator = self._get_contract_creation_info(token_addr)
         symbol, name = self._get_token_metadata(token_addr)
-        holder_cnt = self._get_holder_count(token_addr)
 
         token_info = {
             'token_addr': token_addr,
             'pair_addr': pair_info['pair_addr'],
+            'pair_creator' : pair_info['pair_creator'],
             'token_create_ts': token_create_ts,
             'lp_create_ts': pair_info['lp_create_ts'],
             'pair_idx': pair_info['pair_idx'],
             'pair_type': pair_info['pair_type'],
             'token_creator_addr': token_creator,
             'symbol': symbol,
-            'name': name,
-            'holder_cnt': holder_cnt
+            'name': name
         }
 
         # Collect holders
@@ -185,6 +182,7 @@ class UnifiedDataCollector:
                         pair_created_block = int(log['blockNumber'], 16)
                         pair_created_ts = int(log['timeStamp'], 16)
                         tx_hash = log['transactionHash']
+                        tx_from, tx_to = self._get_tx_from_to(tx_hash)
 
                         topics = log['topics']
                         token0 = Web3.to_checksum_address('0x' + topics[1][-40:])
@@ -203,6 +201,7 @@ class UnifiedDataCollector:
                             'lp_create_ts': datetime.fromtimestamp(pair_created_ts, tz=timezone.utc),
                             'pair_idx': pair_idx,
                             'pair_type': factory_name,
+                            'pair_creator': tx_from,
                             'token0': token0,
                             'token1': token1,
                             'token0_decimals': token0_decimals,
@@ -797,38 +796,6 @@ class UnifiedDataCollector:
         except Exception as e:
             logger.warning(f"Failed to get token metadata: {e}")
             return None, None
-
-    def _get_holder_count(self, token_addr: str) -> Optional[int]:
-        """Get total holder count using Chainbase API."""
-        logger.info(f"Fetching holder count for {token_addr}")
-
-        url = "https://api.chainbase.online/v1/token/holders"
-        params = {
-            "chain_id": 1,
-            "contract_address": token_addr,
-            "page": 1,
-            "limit": 1
-        }
-        headers = {
-            "X-API-Key": self.chainbase_api_key
-        }
-
-        try:
-            response = requests.get(url, params=params, headers=headers, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            if data.get("code") == 0 and "count" in data:
-                holder_count = data["count"]
-                logger.info(f"Holder count: {holder_count}")
-                return holder_count
-            else:
-                logger.warning(f"Chainbase API error: {data.get('message', 'Unknown error')}")
-                return None
-
-        except Exception as e:
-            logger.error(f"Error fetching holder count from Chainbase: {e}")
-            return None
 
     def _collect_holders(self, token_addr: str, max_holders: int = 20) -> List[Dict[str, Any]]:
         """Collect top token holders using Moralis API."""

@@ -13,6 +13,99 @@ ETH_TRANSFER_AMOUNT = int(0.1 * 1e18)
 BUY_AMOUNT = int(0.01 * 1e18)
 SELL_RATIO = 0.9
 
+
+def swap_quote_for_tokens(detector, quote_token, quote_addr, amount, recipient, account):
+    """Helper function to swap quote tokens for target tokens (V2/V3 compatible)"""
+    deadline = chain.time() + 300
+    path = [quote_addr, detector.token_address]
+
+    if detector.dex_version == "v3":
+        quote_token.approve(detector.v3_router_addr, amount, {"from": account})
+
+        params = (
+            quote_addr,
+            detector.token_address,
+            detector.fee_tier,
+            recipient,
+            deadline,
+            amount,
+            0,
+            0
+        )
+
+        detector.v3_router.exactInputSingle(
+            params,
+            {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
+        )
+    else:
+        quote_token.approve(detector.router_addr, amount, {"from": account})
+        detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amount, 0, path, recipient, deadline,
+            {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
+        )
+
+
+def swap_tokens_for_quote(detector, token_amount, quote_addr, recipient, account):
+    """Helper function to swap target tokens for quote tokens (V2/V3 compatible)"""
+    deadline = chain.time() + 300
+    is_weth = quote_addr.lower() == detector.weth.address.lower()
+
+    if detector.dex_version == "v3":
+        detector.token.approve(detector.v3_router_addr, token_amount, {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT})
+
+        if is_weth:
+            params = (
+                detector.token_address,
+                quote_addr,
+                detector.fee_tier,
+                detector.v3_router_addr,
+                deadline,
+                token_amount,
+                0,
+                0
+            )
+
+            detector.v3_router.exactInputSingle(
+                params,
+                {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
+            )
+
+            if hasattr(detector.v3_router, 'unwrapWETH9'):
+                weth_balance = detector.weth.balanceOf(detector.v3_router_addr)
+                if weth_balance > 0:
+                    detector.v3_router.unwrapWETH9(weth_balance, recipient, {"from": account})
+        else:
+            params = (
+                detector.token_address,
+                quote_addr,
+                detector.fee_tier,
+                recipient,
+                deadline,
+                token_amount,
+                0,
+                0
+            )
+
+            detector.v3_router.exactInputSingle(
+                params,
+                {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
+            )
+    else:
+        detector.token.approve(detector.router_addr, token_amount, {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT})
+
+        if is_weth:
+            path_reverse = [detector.token_address, detector.weth.address]
+            detector.router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+                token_amount, 0, path_reverse, recipient, deadline,
+                {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
+            )
+        else:
+            path_reverse = [detector.token_address, quote_addr]
+            detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                token_amount, 0, path_reverse, recipient, deadline,
+                {"from": account, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
+            )
+
 def prepare_account_with_quote(detector, account, amount_wei):
     """계정에 Quote Token 준비 (WETH 또는 다른 Quote Token)"""
     quote_addr = detector.quote_token_address or detector.weth.address
@@ -49,20 +142,38 @@ def prepare_account_with_quote(detector, account, amount_wei):
     if quote_addr.lower() == detector.weth.address.lower():
         return detector.weth, quote_addr
 
-    # WETH가 아닌 경우 WETH -> Quote Token 스왑 (1.5배만 스왑, 나머지는 가스용으로 보존)
+    # WETH -> Quote Token swap
     deadline = chain.time() + 300
-    detector.weth.approve(detector.router_addr, swap_amount, {"from": account})
-    network.web3.provider.make_request("anvil_mine", [1])
-    detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-        swap_amount,
-        0,
-        [detector.weth.address, detector.quote_token_address],
-        account.address,
-        deadline,
-        {"from": account}
-    )
-    network.web3.provider.make_request("anvil_mine", [1])
 
+    if detector.dex_version == "v3":
+        detector.weth.approve(detector.v3_router_addr, swap_amount, {"from": account})
+        network.web3.provider.make_request("anvil_mine", [1])
+
+        params = (
+            detector.weth.address,
+            detector.quote_token_address,
+            3000,  # 0.3% fee tier for WETH-stablecoin pairs
+            account.address,
+            deadline,
+            swap_amount,
+            0,
+            0
+        )
+
+        detector.v3_router.exactInputSingle(params, {"from": account})
+    else:
+        detector.weth.approve(detector.router_addr, swap_amount, {"from": account})
+        network.web3.provider.make_request("anvil_mine", [1])
+        detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            swap_amount,
+            0,
+            [detector.weth.address, detector.quote_token_address],
+            account.address,
+            deadline,
+            {"from": account}
+        )
+
+    network.web3.provider.make_request("anvil_mine", [1])
     return detector.quote_token, detector.quote_token_address
 
 # 통합 접근 제어 함수 목록 (Blacklist + Whitelist, 정방향 + 역방향 탐지)
@@ -240,13 +351,9 @@ def test_blacklist(detector, owner_address, abi, privileged_accounts):
     path = [quote_addr, detector.token_address]
     path_reverse = [detector.token_address, quote_addr]
 
-    # Buyer1 매수
+    # Buyer1 buy
     try:
-        quote_token.approve(detector.router_addr, quote_balance_buyer1, {"from": buyer1})
-        detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            BUY_AMOUNT, 0, path, buyer1.address, deadline,
-            {"from": buyer1, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
-        )
+        swap_quote_for_tokens(detector, quote_token, quote_addr, BUY_AMOUNT, buyer1.address, buyer1)
         network.web3.provider.make_request("anvil_mine", [1])
         buyer1_tokens = detector.token.balanceOf(buyer1.address)
         result["details"]["buyer1_buy_success"] = True
@@ -270,17 +377,9 @@ def test_blacklist(detector, owner_address, abi, privileged_accounts):
         result["reason"] = f"{found_setter['name']}() 호출 실패"
         return result
 
-    # Buyer1 매도 시도 (차단 확인)
+    # Buyer1 sell attempt (check if blocked)
     try:
-        detector.token.approve(detector.router_addr, buyer1_tokens, {"from": buyer1, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT})
-    except:
-        pass
-
-    try:
-        detector.router.swapExactTokensForETHSupportingFeeOnTransferTokens(
-            int(buyer1_tokens * SELL_RATIO), 0, path_reverse, buyer1.address, deadline,
-            {"from": buyer1, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
-        )
+        swap_tokens_for_quote(detector, int(buyer1_tokens * SELL_RATIO), quote_addr, buyer1.address, buyer1)
         result["details"]["buyer1_sell_after_blacklist"] = "SUCCESS"
         result["result"] = "NO"
         result["confidence"] = "MEDIUM"
@@ -296,20 +395,12 @@ def test_blacklist(detector, owner_address, abi, privileged_accounts):
     quote_balance_buyer2 = quote_token2.balanceOf(buyer2.address)
 
     try:
-        quote_token2.approve(detector.router_addr, quote_balance_buyer2, {"from": buyer2})
-        detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            BUY_AMOUNT, 0, path, buyer2.address, deadline,
-            {"from": buyer2, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
-        )
+        swap_quote_for_tokens(detector, quote_token2, quote_addr, BUY_AMOUNT, buyer2.address, buyer2)
         network.web3.provider.make_request("anvil_mine", [1])
         buyer2_tokens = detector.token.balanceOf(buyer2.address)
         result["details"]["buyer2_buy_success"] = True
 
-        detector.token.approve(detector.router_addr, buyer2_tokens, {"from": buyer2, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT})
-        detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            int(buyer2_tokens * SELL_RATIO), 0, path_reverse, buyer2.address, deadline,
-            {"from": buyer2, "gas_price": GAS_PRICE, "gas_limit": GAS_LIMIT}
-        )
+        swap_tokens_for_quote(detector, int(buyer2_tokens * SELL_RATIO), quote_addr, buyer2.address, buyer2)
         network.web3.provider.make_request("anvil_mine", [1])
         result["details"]["buyer2_sell_success"] = True
         print(f"  Buyer2 매도 성공")

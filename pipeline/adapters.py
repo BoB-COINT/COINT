@@ -28,7 +28,6 @@ class DataCollectorAdapter:
             - ETHERSCAN_API_KEY: Etherscan API key
             - ETHERSCAN_API_URL: Etherscan V2 API URL
             - MORALIS_API_KEY: Moralis API key
-            - CHAINBASE_API_KEY: Chainbase API key
         """
         from modules.data_collector import UnifiedDataCollector
         from django.conf import settings
@@ -37,8 +36,7 @@ class DataCollectorAdapter:
             rpc_url=settings.ETHEREUM_RPC_URL,
             etherscan_api_key=settings.ETHERSCAN_API_KEY,
             etherscan_api_url=settings.ETHERSCAN_API_URL,
-            moralis_api_key=settings.MORALIS_API_KEY,
-            chainbase_api_key=settings.CHAINBASE_API_KEY
+            moralis_api_key=settings.MORALIS_API_KEY
         )
 
     def collect_all(self, token_addr: str, days: int = 14) -> Dict[str, Any]:
@@ -102,14 +100,14 @@ class DataCollectorAdapter:
         token_info = TokenInfo.objects.create(
             token_addr=token_info_data['token_addr'],
             pair_addr=token_info_data['pair_addr'],
+            pair_creator=token_info_data['pair_creator'],
             token_create_ts=token_info_data['token_create_ts'],
             lp_create_ts=token_info_data['lp_create_ts'],
             pair_idx=token_info_data['pair_idx'],
             pair_type=token_info_data['pair_type'],
             token_creator_addr=token_info_data['token_creator_addr'],
             symbol=token_info_data.get('symbol'),
-            name=token_info_data.get('name'),
-            holder_cnt=token_info_data.get('holder_cnt')
+            name=token_info_data.get('name')
         )
 
         # 2. Save PairEvents (bulk)
@@ -293,26 +291,16 @@ class HoneypotDynamicAnalyzerAdapter:
             token_info=token_info,
             defaults={
                 'verified': result_data.get('verified', False),
-                'buy_sell_result': result_data.get('buy_sell', {}).get('result', False),
-                'buy_sell_return_rate': result_data.get('buy_sell', {}).get('return_rate'),
-                'blacklist_result': result_data.get('blacklist_check', {}).get('result', False),
-                'blacklist_confidence': result_data.get('blacklist_check', {}).get('confidence', 'LOW'),
                 'trading_suspend_result': result_data.get('trading_suspend_check', {}).get('result', False),
-                'trading_suspend_confidence': result_data.get('trading_suspend_check', {}).get('confidence', 'LOW'),
                 'exterior_call_result': result_data.get('exterior_call_check', {}).get('result', False),
-                'exterior_call_confidence': result_data.get('exterior_call_check', {}).get('confidence', 'LOW'),
                 'unlimited_mint_result': result_data.get('unlimited_mint', {}).get('result', False),
-                'unlimited_mint_confidence': result_data.get('unlimited_mint', {}).get('confidence', 'LOW'),
                 'balance_manipulation_result': result_data.get('balance_manipulation', {}).get('result', False),
-                'balance_manipulation_confidence': result_data.get('balance_manipulation', {}).get('confidence', 'LOW'),
                 'tax_manipulation_result': result_data.get('tax_manipulation', {}).get('result', False),
-                'tax_manipulation_confidence': result_data.get('tax_manipulation', {}).get('confidence', 'LOW'),
                 'existing_holders_result': result_data.get('existing_holders_check', {}).get('result', False),
-                'existing_holders_confidence': result_data.get('existing_holders_check', {}).get('confidence', 'LOW'),
             }
         )
 
-    def analyze(self, token_info: 'TokenInfo', processed_data: 'HoneypotProcessedData') -> Dict[str, Any]:
+    def analyze(self, token_info: 'TokenInfo') -> Dict[str, Any]:
         """
         Run dynamic analysis for honeypot detection.
 

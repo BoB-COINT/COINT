@@ -10,6 +10,7 @@ import os
 import requests
 from datetime import datetime
 from pathlib import Path
+from input_parser import parse_csv 
 from brownie import accounts, chain,network,Contract,project, web3
 from brownie.network import gas_price
 from eth_utils import to_checksum_address
@@ -20,7 +21,6 @@ import psutil
 from web3 import Web3
 import django
 
-# Setup Django to use ORM
 django_project_path = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(django_project_path))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
@@ -30,7 +30,6 @@ django.setup()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scenarios import (
     basic_swap_test,
-    black_whitelist,
     owner_suspend,
     exterior_function_call,
     owner_bal_manipulation,
@@ -38,7 +37,8 @@ from scenarios import (
     owner_tax_manipulation,
     existing_holders_test,
 )
-from scripts import utils
+
+from scripts import utils, v3_utils
 
 # Constants
 ROUTER_LIST = {
@@ -90,6 +90,11 @@ FACTORY_ABI_JSON = "interfaces/IUniswapV2Factory.json"
 WETH_ABI_JSON = "interfaces/IWETH.json"
 EXTENDED_ABI_JSON = "interfaces/IExtendedERC20.json"
 
+V3_POOL_ABI_JSON = "interfaces/IUniswapV3Pool.json"
+V3_FACTORY_ABI_JSON = "interfaces/IUniswapV3Factory.json"
+V3_SWAP_ROUTER_ABI_JSON = "interfaces/IUniswapV3SwapRouter.json"
+V3_QUOTER_ABI_JSON = "interfaces/IQuoterV2.json"
+
 # Honeypot detection thresholds
 THRESHOLDS = {
     "high_risk": 0.5,
@@ -123,7 +128,7 @@ def format_units(amount, decimals):
     return amount / (10 ** decimals)
 
 
-def wait_for_rpc_ready(timeout=30):
+def wait_for_rpc_ready(timeout=120):
     """Wait until the RPC endpoint responds after launch or reset."""
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -150,6 +155,16 @@ def ensure_rpc_fork(fork_url, block_number):
     time.sleep(0.5)
     wait_for_rpc_ready()
 
+
+def set_rpc_timeout(seconds=120):
+    """Increase HTTP RPC timeout for both Brownie network.web3 and global web3."""
+    for w3 in (getattr(network, "web3", None), globals().get("web3")):
+        try:
+            if w3 and getattr(w3, "provider", None) and hasattr(w3.provider, "_request_kwargs"):
+                w3.provider._request_kwargs["timeout"] = seconds
+        except Exception as exc:
+            print(f"[warn] Failed to set RPC timeout: {exc}")
+
 class ScamAnalyzer:
     """허니팟 탐지 클래스"""
 
@@ -171,8 +186,21 @@ class ScamAnalyzer:
         with open(WETH_ABI_JSON, 'r') as f:
             self.weth_abi = json.load(f)
 
+        with open(V3_POOL_ABI_JSON, 'r') as f:
+            self.v3_pool_abi = json.load(f)
+        with open(V3_FACTORY_ABI_JSON, 'r') as f:
+            self.v3_factory_abi = json.load(f)
+        with open(V3_SWAP_ROUTER_ABI_JSON, 'r') as f:
+            self.v3_router_abi = json.load(f)
+        with open(V3_QUOTER_ABI_JSON, 'r') as f:
+            self.v3_quoter_abi = json.load(f)
+
         self.router_addr = ROUTER_LIST[service]
         self.factory_addr = FACTORY_LIST[service]
+
+        self.v3_factory_addr = v3_utils.V3_FACTORY_ADDRESS
+        self.v3_router_addr = v3_utils.V3_SWAP_ROUTER_ADDRESS
+        self.v3_quoter_addr = v3_utils.V3_QUOTER_V2_ADDRESS
 
         self.token_address = to_checksum_address(token_address)
         self.token_idx = token_idx
@@ -180,18 +208,27 @@ class ScamAnalyzer:
         self.router = Contract.from_abi("IUniswapV2Router02",self.router_addr, self.router_abi)
         self.factory = Contract.from_abi("IUniswapV2Factory",self.factory_addr, self.factory_abi)
         self.weth = Contract.from_abi("IWETH",WETH_ADDRESS,self.weth_abi)
+
+        self.v3_factory = Contract.from_abi("UniswapV3Factory", self.v3_factory_addr, self.v3_factory_abi)
+        self.v3_router = Contract.from_abi("SwapRouter", self.v3_router_addr, self.v3_router_abi)
+        self.v3_quoter = Contract.from_abi("QuoterV2", self.v3_quoter_addr, self.v3_quoter_abi)
+
         self.pair_address = pair_addr
         self.liquidity_provider = None
         self.token_owner = None
         self.pair_creator = to_checksum_address(pair_creator) if pair_creator else None
-        self.is_verified = False  # Etherscan verified 여부
+        self.is_verified = False
         self.implementation_address = None
-        self.quote_token_address = None  # WETH, USDT, USDC 등 페어의 quote token
-        self.quote_token = None  # Quote token contract 객체
+        self.quote_token_address = None
+        self.quote_token = None
         self.quote_token_decimals = 18
+        self.eth_usd_price = None  # cached 1 WETH -> USD estimate
         self.gaslimit = web3.eth.get_block(blocknum)["gasLimit"]
         self.holder_csv_path = holder_csv_path
-        
+
+        self.dex_version = None
+        self.fee_tier = None
+
         if results is not None:
             self.results = results
         else:
@@ -357,7 +394,7 @@ class ScamAnalyzer:
         """토큰 컨트랙트 로드 및 기본 정보 조회 (Etherscan API V2 대응)"""
         try:
             # 1. Etherscan API 키 가져오기
-            etherscan_api_key = os.environ.get("ETHERSCAN_TOKEN")
+            etherscan_api_key = os.environ.get("ETHERSCAN_API_KEY")
             if not etherscan_api_key:
                 print("❌ .env 파일에 ETHERSCAN_TOKEN이 설정되지 않았습니다.")
                 print(f"⚠️  기본 ERC20 ABI 사용")
@@ -384,7 +421,6 @@ class ScamAnalyzer:
 
             abi_address = self.token_address
             proxy_target = self._detect_proxy_implementation()
-
             if proxy_target:
                 abi_address = proxy_target
                 self.implementation_address = proxy_target
@@ -448,26 +484,149 @@ class ScamAnalyzer:
 
     def check_liquidity_pool(self):
         """
-        기존 유동성 풀을 찾아 리저브가 존재하는지 검사한다.
+        Search both V2 and V3 pools and select the one with highest liquidity
         """
-        print(f"{'='*60}")
-        print("유동성 풀 점검")
-        print(f"{'='*60}")
-
         try:
-            print(f"[1/2] 유동성 풀 존재 여부 확인...")
-            best_pair = None
-            best_quote_token = None
-            best_quote_symbol = None
-            best_quote_decimals = 18
-            best_quote_reserve = 0
-            best_token_reserve = 0
+            v2_candidates = self._find_v2_pools()
+            v3_candidates = self._find_v3_pools()
+
+            all_candidates = v2_candidates + v3_candidates
+
+            if not all_candidates:
+                self.results["error"] = "No liquidity pool with reserves"
+                return False
+
+            best = max(all_candidates, key=lambda x: x['comparable_value'])
+
+            self.pair_address = best['pool_address']
+            self.quote_token_address = best['quote_address']
+            self.quote_token_decimals = best['quote_decimals']
+            self.dex_version = best['dex_version']
+            self.fee_tier = best.get('fee_tier')
+            selected_dex = best.get("dex_name")
+
+            if self.dex_version == "v2":
+                if best.get("router_address"):
+                    self.router_addr = best["router_address"]
+                    self.router = Contract.from_abi("IUniswapV2Router02", self.router_addr, self.router_abi)
+                if best.get("factory_address"):
+                    self.factory_addr = best["factory_address"]
+                    self.factory = Contract.from_abi("IUniswapV2Factory", self.factory_addr, self.factory_abi)
+
+            try:
+                if self.quote_token_address.lower() == WETH_ADDRESS.lower():
+                    self.quote_token = self.weth
+                    quote_symbol = best['quote_symbol'] or "WETH"
+                else:
+                    self.quote_token = Contract.from_abi("QuoteToken", self.quote_token_address, self.token_abi)
+                    try:
+                        quote_symbol = self.quote_token.symbol()
+                    except Exception:
+                        quote_symbol = best['quote_symbol'] or "QUOTE"
+            except Exception as e:
+                print(f"   ⚠️  Quote token load failed, fallback to WETH: {e}")
+                self.quote_token_address = WETH_ADDRESS
+                self.quote_token = self.weth
+                self.quote_token_decimals = QUOTE_TOKEN_DECIMALS.get("WETH", 18)
+                quote_symbol = "WETH"
+
+            token_decimals = self.results.get("token_info", {}).get("decimals", 18)
+
+            if self.dex_version == "v2":
+                pair = Contract.from_abi("IUniswapV2Pair", self.pair_address, self.pair_abi)
+                reserves = pair.getReserves()
+                token0 = pair.token0().lower()
+
+                if token0 == self.quote_token_address.lower():
+                    quote_reserve = reserves[0]
+                    token_reserve = reserves[1]
+                else:
+                    quote_reserve = reserves[1]
+                    token_reserve = reserves[0]
+
+                self.results["liquidity_info"] = {
+                    "pair_address": self.pair_address,
+                    "pool_existed": True,
+                    "dex_version": "v2",
+                    "dex_name": selected_dex,
+                    "router_address": self.router_addr,
+                    "quote_symbol": quote_symbol,
+                    "quote_reserve": quote_reserve,
+                    "token_reserve": token_reserve,
+                    "quote_decimals": self.quote_token_decimals,
+                    "token_decimals": token_decimals,
+                }
+            else:
+                pool = Contract.from_abi("IUniswapV3Pool", self.pair_address, self.v3_pool_abi)
+                liquidity = pool.liquidity()
+                slot0 = pool.slot0()
+                quote_reserve = best.get("quote_reserve")
+
+                self.results["liquidity_info"] = {
+                    "pool_address": self.pair_address,
+                    "pool_existed": True,
+                    "dex_version": "v3",
+                    "dex_name": selected_dex,
+                    "quote_symbol": quote_symbol,
+                    "liquidity": liquidity,
+                    "sqrt_price_x96": slot0[0],
+                    "current_tick": slot0[1],
+                    "fee_tier": self.fee_tier,
+                    "quote_decimals": self.quote_token_decimals,
+                    "token_decimals": token_decimals,
+                    "quote_reserve": quote_reserve,
+                    "token_reserve": best.get("token_reserve"),
+                }
+
+            self.results["analysis_info"]["liquidity_created"] = False
+
+            # Final concise log for selected pool
+            version_display = f"{self.dex_version.upper()}" + (f" (fee: {self.fee_tier/10000}%)" if self.fee_tier else "")
+            dex_display = f" [{selected_dex}]" if selected_dex else ""
+            print(f"{'='*60}")
+            print(f"Liquidity Pool Selected: {best['quote_symbol']} - {version_display}{dex_display}")
+            print(f"Address: {self.pair_address}")
+            if self.dex_version == "v2":
+                print(f"Quote balance: {format_units(self.results['liquidity_info']['quote_reserve'], self.quote_token_decimals):.6f} {quote_symbol}")
+                print(f"Token balance: {self.results['liquidity_info']['token_reserve'] / (10 ** token_decimals):.6f}")
+            else:
+                print(f"Liquidity: {liquidity}")
+                print(f"Current tick: {slot0[1]}")
+                if quote_reserve is not None:
+                    print(f"Quote reserve: {format_units(quote_reserve, self.quote_token_decimals):.6f} {quote_symbol}")
+                if best.get("token_reserve") is not None:
+                    token_reserve_v3 = best["token_reserve"]
+                    print(f"Token reserve: {token_reserve_v3 / (10 ** token_decimals):.6f}")
+            print(f"{'='*60}")
+            return True
+
+        except Exception as e:
+            print(f"❌ Liquidity check failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.results["liquidity_error"] = str(e)
+            return False
+
+    def _find_v2_pools(self):
+        """Find all V2 pools for the token"""
+        candidates = []
+
+        for dex_name, factory_addr in FACTORY_LIST.items():
+            try:
+                factory = Contract.from_abi("IUniswapV2Factory", factory_addr, self.factory_abi)
+            except Exception as e:
+                print(f"   V2 factory load failed for {dex_name}: {str(e)}")
+                continue
+
+            router_addr = ROUTER_LIST.get(dex_name)
 
             for quote_symbol, quote_addr in QUOTE_TOKENS.items():
                 try:
-                    pair_addr = self.factory.getPair(quote_addr, self.token_address)
-                    if Web3.to_checksum_address(pair_addr) != Web3.to_checksum_address(self.pair_address):
+                    pair_addr = factory.getPair(quote_addr, self.token_address)
+
+                    if pair_addr is None or pair_addr == ZERO_ADDRESS:
                         continue
+
                     pair = Contract.from_abi("IUniswapV2Pair", pair_addr, self.pair_abi)
                     reserves = pair.getReserves()
                     token0 = pair.token0().lower()
@@ -480,89 +639,113 @@ class ScamAnalyzer:
                         token_reserve = reserves[0]
 
                     current_decimals = QUOTE_TOKEN_DECIMALS.get(quote_symbol, 18)
-                    print(f"   {quote_symbol} 페어 {pair_addr}")
-                    print(f"      Quote 리저브: {format_units(quote_reserve, current_decimals):.6f} {quote_symbol}")
+                    comparable_value = utils.quote_value_in_usd(
+                        quote_symbol,
+                        quote_reserve,
+                        current_decimals,
+                        lambda: utils.ensure_eth_usd_price(
+                            self.router, WETH_ADDRESS, QUOTE_TOKENS, QUOTE_TOKEN_DECIMALS, cache_obj=self
+                        ),
+                    )
 
-                    # if quote_reserve == 0 or token_reserve == 0:
-                    #     print("      ↳ 리저브가 0이므로 다음 후보를 확인합니다.")
-                    #     continue
-
-                    # if quote_reserve > best_quote_reserve:
-                    best_pair = pair_addr
-                    best_quote_token = quote_addr
-                    best_quote_symbol = quote_symbol
-                    best_quote_decimals = current_decimals
-                    best_quote_reserve = quote_reserve
-                    best_token_reserve = token_reserve
+                    candidates.append({
+                        'pool_address': pair_addr,
+                        'quote_symbol': quote_symbol,
+                        'quote_address': quote_addr,
+                        'quote_decimals': current_decimals,
+                        'quote_reserve': quote_reserve,
+                        'token_reserve': token_reserve,
+                        'dex_version': 'v2',
+                        'dex_name': dex_name,
+                        'router_address': router_addr,
+                        'factory_address': factory_addr,
+                        'comparable_value': comparable_value
+                    })
 
                 except Exception as e:
-                    print(f"   ↳ {quote_symbol} 조회 중 오류: {e}")
+                    print(f"   V2 {dex_name} {quote_symbol} pool error: {str(e)}")
                     continue
 
-            if best_pair is None:
-                print("⚠️  유효한 유동성 풀을 찾지 못했습니다.")
-                print(pair_addr)
-                self.results["error"] = "No liquidity pool with reserves"
-                return False
+        return candidates
 
-            self.pair_address = best_pair
-            self.quote_token_address = best_quote_token
-            self.quote_token_decimals = best_quote_decimals
-            print(f"✅ 선택된 풀: {best_quote_symbol} ({self.pair_address})")
+    def _find_v3_pools(self):
+        """Find all V3 pools for the token"""
+        candidates = []
 
-            try:
-                if self.quote_token_address.lower() == WETH_ADDRESS.lower():
-                    self.quote_token = self.weth
-                    quote_symbol = best_quote_symbol or "WETH"
-                else:
-                    self.quote_token = Contract.from_abi("QuoteToken", self.quote_token_address, self.token_abi)
+        for quote_symbol, quote_addr in QUOTE_TOKENS.items():
+            for fee in v3_utils.V3_FEE_TIERS:
+                try:
+                    # Try both token orderings (V3 is order-sensitive)
+                    pool_addr = self.v3_factory.getPool(quote_addr, self.token_address, fee)
+
+                    # If not found, try reverse order
+                    if pool_addr == ZERO_ADDRESS or pool_addr is None:
+                        pool_addr = self.v3_factory.getPool(self.token_address, quote_addr, fee)
+
+                    if pool_addr == ZERO_ADDRESS or pool_addr is None:
+                        continue
+
+                    pool = Contract.from_abi("IUniswapV3Pool", pool_addr, self.v3_pool_abi)
+
                     try:
-                        quote_symbol = self.quote_token.symbol()
+                        slot0 = pool.slot0()
+                        sqrt_price_x96 = slot0[0]
+                        current_tick = slot0[1]
                     except Exception:
-                        quote_symbol = best_quote_symbol or "QUOTE"
-            except Exception as e:
-                print(f"   ⚠️  Quote token 로드 실패, WETH로 회귀: {e}")
-                self.quote_token_address = WETH_ADDRESS
-                self.quote_token = self.weth
-                self.quote_token_decimals = QUOTE_TOKEN_DECIMALS.get("WETH", 18)
-                quote_symbol = "WETH"
+                        # Some pools revert on slot0 if not initialized yet
+                        sqrt_price_x96 = 0
+                        current_tick = None
 
-            print(f"[2/2] 기존 리저브 정보 확인...")
-            pair = Contract.from_abi("IUniswapV2Pair", self.pair_address, self.pair_abi)
-            reserves = pair.getReserves()
-            token0 = pair.token0().lower()
+                    try:
+                        liquidity = pool.liquidity()
+                    except Exception:
+                        liquidity = 0
 
-            if token0 == self.quote_token_address.lower():
-                quote_reserve = reserves[0]
-                token_reserve = reserves[1]
-            else:
-                quote_reserve = reserves[1]
-                token_reserve = reserves[0]
+                    # Use actual token balances as comparable metric
+                    current_decimals = QUOTE_TOKEN_DECIMALS.get(quote_symbol, 18)
+                    try:
+                        quote_token = Contract.from_abi("QuoteToken", quote_addr, self.token_abi)
+                        quote_reserve = quote_token.balanceOf(pool_addr)
+                    except Exception:
+                        quote_reserve = 0
 
-            token_decimals = self.results.get("token_info", {}).get("decimals", 18)
-            print(f"   Quote 잔고: {format_units(quote_reserve, self.quote_token_decimals):.6f} {quote_symbol}")
-            print(f"   Token 잔고: {token_reserve / (10 ** token_decimals):.6f}")
+                    try:
+                        token_reserve = self.token.balanceOf(pool_addr)
+                    except Exception:
+                        token_reserve = 0
 
-            self.results["analysis_info"]["liquidity_created"] = False
-            self.results["liquidity_info"] = {
-                "pair_address": self.pair_address,
-                "pool_existed": True,
-                "quote_symbol": quote_symbol,
-                "quote_reserve": quote_reserve,
-                "token_reserve": token_reserve,
-                "quote_decimals": self.quote_token_decimals,
-                "token_decimals": token_decimals,
-            }
+                    comparable_value = utils.quote_value_in_usd(
+                        quote_symbol,
+                        quote_reserve,
+                        current_decimals,
+                        lambda: utils.ensure_eth_usd_price(
+                            self.router, WETH_ADDRESS, QUOTE_TOKENS, QUOTE_TOKEN_DECIMALS, cache_obj=self
+                        ),
+                    )
 
-            print(f"{'='*60}")
-            return True
+                    if liquidity == 0 and quote_reserve == 0 and token_reserve == 0:
+                        continue
 
-        except Exception as e:
-            print(f"❌유동성 확인 실패: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            self.results["liquidity_error"] = str(e)
-            return False
+                    candidates.append({
+                        'pool_address': pool_addr,
+                        'quote_symbol': quote_symbol,
+                        'quote_address': quote_addr,
+                        'quote_decimals': current_decimals,
+                        'fee_tier': fee,
+                        'liquidity': liquidity,
+                        'quote_reserve': quote_reserve,
+                        'token_reserve': token_reserve,
+                        'sqrt_price_x96': sqrt_price_x96,
+                        'current_tick': current_tick,
+                        'dex_version': 'v3',
+                        'comparable_value': comparable_value
+                    })
+
+                except Exception as e:
+                    print(f"   V3 {quote_symbol} pool (fee: {fee/10000}%) error: {str(e)}")
+                    continue
+
+        return candidates
 
     def run_scenario(self, scenario_module):
         """
@@ -577,7 +760,7 @@ class ScamAnalyzer:
         return scenario_module.run_scenario(self)
 
     def get_creator(self):
-        etherkey = os.environ.get("ETHERSCAN_TOKEN")
+        etherkey = os.environ.get("ETHERSCAN_API_KEY")
         param = {
             "chainid":1,
             "module": "contract",
@@ -600,7 +783,18 @@ class ScamAnalyzer:
         # 토큰 소유자 정보 확보
         self.token_owner = self.find_owner()
         self.contract_creator = self.get_creator()
-        self.owner_candidate = [self.token_owner,self.contract_creator,self.pair_creator]
+        try:
+            controller_attr = getattr(self.token, "controller")
+        except AttributeError:
+            controller_attr = None
+
+        if controller_attr is not None:
+           self.controller = self.token.controller()
+        else:
+            self.controller = None
+        print(self.controller)
+
+        self.owner_candidate = [self.token_owner,self.contract_creator,self.pair_creator,self.controller]
 
         print(f"토큰 소유자: {self.token_owner}")
         print(f"{'='*60}\n")
@@ -647,14 +841,6 @@ class ScamAnalyzer:
             print("⚠️  Unverified 컨트랙트 - 고급 시나리오 분석 스킵")
             print(f"{'⚠'*60}\n")
             return self.results
-
-        # 3. Blacklist/Whitelist Test
-        print(f"\n{'#'*60}")
-        print("# Scenario 3: Blacklist/Whitelist Detection")
-        print(f"{'#'*60}")
-        blacklist_result = self.run_scenario(black_whitelist)
-        self.results["scenarios"]["blacklist_whitelist"] = blacklist_result
-        self.print_scenario_result(blacklist_result)
 
         # 4. Exterior Function Call Test
         print(f"\n{'#'*60}")
@@ -746,13 +932,6 @@ class ScamAnalyzer:
             print(f"\n[2] Existing Holders Sell Test")
             print(f"    판정: {eh_result['result']} (신뢰도: {eh_result['confidence']})")
             print(f"    {eh_result['reason']}")
-
-        # Blacklist/Whitelist 결과
-        if "blacklist_whitelist" in self.results.get("scenarios", {}):
-            bl_result = self.results["scenarios"]["blacklist_whitelist"]
-            print(f"\n[3] Blacklist/Whitelist Detection")
-            print(f"    판정: {bl_result['result']} (신뢰도: {bl_result['confidence']})")
-            print(f"    {bl_result['reason']}")
 
         # Exterior Function Call 결과
         if "exterior_function_call" in self.results.get("scenarios", {}):
@@ -872,35 +1051,20 @@ class ScamAnalyzer:
     def save_results(self):
         """결과를 JSON 파일로 저장 (규격화된 형태)"""
         # buy_sell 판정 로직
-        buy_sell_result = False
-        return_rate = None
+        buy_result = []
+        sell_result = []
+        fail_type = []
 
         if self.results.get("tests"):
-            # 모든 테스트에서 매수가 하나라도 성공했는지 확인
-            any_buy_success = any(test["buy_success"] for test in self.results["tests"])
+            for test in self.results["tests"]:
+                tmp_buy = test["buy_success"]
+                buy_result.append(tmp_buy)
 
-            if any_buy_success:
-                # 매수 성공한 테스트들 중 매도 성공 여부 확인
-                buy_succeeded_tests = [test for test in self.results["tests"] if test["buy_success"]]
-                any_sell_success = any(test["sell_success"] for test in buy_succeeded_tests)
+                tmp_sell = test["sell_success"]
+                sell_result.append(tmp_sell)
 
-                if any_sell_success:
-                    buy_sell_result = True  # 매수/매도 모두 성공
-
-                    # 매도 성공한 테스트들의 평균 실수령률 계산
-                    recovery_rates = [
-                        test.get("recovery_rate")
-                        for test in buy_succeeded_tests
-                        if test.get("sell_success") and test.get("recovery_rate") is not None
-                    ]
-
-                    if recovery_rates:
-                        avg_recovery_rate = sum(recovery_rates) / len(recovery_rates)
-                        return_rate = round(avg_recovery_rate * 100, 2)  # 퍼센트로 변환
-                else:
-                    buy_sell_result = False  # 매수는 가능하나 매도 불가
-            else:
-                buy_sell_result = False  # 매수 실패
+                tmp_fail = test["sell_fail"]
+                fail_type.append(tmp_fail)
 
         # 시나리오 결과를 규격화된 형태로 변환
         def format_scenario_result(scenario_key):
@@ -915,11 +1079,13 @@ class ScamAnalyzer:
         standardized_result = {
             "token_addr_idx": self.token_idx,
             "verified": self.is_verified,
-            "buy_sell": {
-                "result": buy_sell_result,
-                "return_rate": return_rate
+            "buy": {
+                "result": buy_result
             },
-            "blacklist_check": format_scenario_result("blacklist_whitelist"),
+            "sell":{
+                "result":sell_result,
+                "fail_type": fail_type,
+            },
             "trading_suspend_check": format_scenario_result("trading_suspend"),
             "exterior_call_check": format_scenario_result("exterior_function_call"),
             "unlimited_mint": format_scenario_result("unlimited_mint"),
@@ -943,48 +1109,20 @@ class ScamAnalyzer:
 
         return filepath
 
-
-def get_validblock(pair_addr,alchemy,etherscan):
-    param = {
-        "chainid":1,
-        "module": "logs",
-        "action": "getLogs",
-        "fromBlock": "0",
-        "toBlock": "latest",
-        "address": pair_addr,
-        "topic0": "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-        "topic2": "0x0000000000000000000000000000000000000000000000000000000000000000",
-        "apikey": etherscan
-    }
-
-    w3 = Web3(Web3.HTTPProvider(alchemy))
-    time.sleep(0.1)
-    res = requests.get('https://api.etherscan.io/v2/api',params=param)
-    response = res.json()
-    result = response['result']
-
-    if len(result) < 2:
-        valid_block = w3.eth.block_number
-
-    else:
-        # print(result[-1]['transactionHash'])
-        valid_block = int(result[-1]['blockNumber'],16) - 1
-    
-    return valid_block
-
-
 def main():
     load_dotenv()
-    """메인 함수 - DB에서 데이터 로드"""
+    """메인 함수 - .env 기반 단일 토큰 검사"""
+    # DB 로드
     from api.models import TokenInfo
 
     network.rpc._revert_trace = False
+    # w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
 
     skip_flag = False
+
     if len(sys.argv) < 2:
         print("Usage: scam_analyzer.py <token_addr_idx>")
         return
-
     token_addr_idx = int(sys.argv[1])
 
     # Load token info from database
@@ -992,27 +1130,28 @@ def main():
         token_info_obj = TokenInfo.objects.get(id=token_addr_idx)
     except TokenInfo.DoesNotExist:
         print(f"Error: TokenInfo with id {token_addr_idx} not found")
-        return
-
+        return   
+    
     print(f"\n{'='*60}")
     print(f"분석 시작: Token #{token_addr_idx}")
-    print(f"{'='*60}\n")
-
-    fork_url = os.environ.get("ALCHEMY_URL")
-    etherscan = os.environ.get("ETHERSCAN_TOKEN")
+    print(f"{'='*60}\n") 
+    
+    fork_url = os.environ.get("ETHEREUM_RPC_URL")
     w3 = Web3(Web3.HTTPProvider(fork_url))
+    block_number = w3.eth.block_number
 
     try:
-        # Prepare token info dict from DB
+        # .env에서 토큰 주소, fork url 읽기
         service_input = token_info_obj.pair_type
         token_idx = token_info_obj.id
         pair_addr = token_info_obj.pair_addr
-        block_number = w3.eth.block_number
+        # block_number = w3.eth.block_number
 
         pair_creator = token_info_obj.pair_creator
         token_address = token_info_obj.token_addr
 
-        # Validation
+    
+        # Validation: 필수 정보 체크
         if not token_address:
             print(f"Error: Token address is empty")
             return
@@ -1023,59 +1162,73 @@ def main():
 
         if not fork_url:
             print(f"Error: ALCHEMY_URL not set")
-            return
+            
+        try:
+            # for step in range(len(blocknum_list)):
+            if network.is_connected():
+                print('network already')
+                network.disconnect()
+            # fork to certain block number
+            if network.rpc.is_active():
+                print("rpc already")
+                network.rpc.kill()
+            
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                cmd = " ".join(proc.info['cmdline']).lower()
+                if "anvil" in cmd:
+                    print(f"💀 Killing old RPC process: {proc.pid}")
+                    proc.kill()
 
-        # Kill existing processes and setup network
-        if network.is_connected():
-            network.disconnect()
+            network.rpc.launch(
+                cmd=f"anvil --fork-url={fork_url} --fork-block-number={block_number} --accounts=10 --hardfork=cancun --no-storage-caching"
+            )
 
-        if network.rpc.is_active():
-            network.rpc.kill()
+            time.sleep(2)
+            if not network.is_connected():
+                network.connect("development")
+            try:
+                wait_for_rpc_ready(timeout=60)
+            except Exception as exc:
+                print(f"[warn] RPC readiness check failed: {exc}")
+            # Expand HTTP RPC timeout to survive heavy traces
+            set_rpc_timeout(seconds=120)
+            print("Anvil accounts:", web3.eth.accounts)
 
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            cmd = " ".join(proc.info['cmdline']).lower()
-            if "anvil" in cmd:
-                print(f"Killing old RPC process: {proc.pid}")
-                proc.kill()
+            print(f"\n{'='*60}")
+            print(f"현재 네트워크: {network.show_active()}")
+            print(f"블록 번호: {chain.height}")
+            print(f"인덱스 번호: {token_idx}")
+            print(f"{'='*60}")
 
-        network.rpc.launch(
-            cmd=f"anvil --fork-url={fork_url} --fork-block-number={block_number} --accounts=10 --hardfork=cancun --no-storage-caching"
-        )
+            # gas configuration
+            gas_price("1000 gwei")
 
-        time.sleep(2)
-        if not network.is_connected():
-            network.connect("development")
+            # run analyzer
+            print(f"\n{'#'*60}")
+            print(f"# 검사 시작: {token_address}")
+            print(f"{'#'*60}")
 
-        print(f"\n{'='*60}")
-        print(f"현재 네트워크: {network.show_active()}")
-        print(f"블록 번호: {chain.height}")
-        print(f"인덱스 번호: {token_idx}")
-        print(f"{'='*60}")
+            detector = ScamAnalyzer(
+                token_address,
+                token_idx,
+                service_input,
+                block_number,
+                pair_addr,
+                pair_creator,
+                holder_csv_path=None,
+            )
+            results = detector.run_tests()
 
-        gas_price("1000 gwei")
 
-        print(f"\n{'#'*60}")
-        print(f"# 검사 시작: {token_address}")
-        print(f"{'#'*60}")
-
-        detector = ScamAnalyzer(
-            token_address,
-            token_idx,
-            service_input,
-            block_number,
-            pair_addr,
-            pair_creator,
-            holder_csv_path=None,
-        )
-        results = detector.run_tests()
-
-        skip_reason = results.get("error") or results.get("liquidity_error")
-        if skip_reason:
-            print(f"[SKIP] {skip_reason}")
-            return
-
+        except Exception as e:
+            print(f"\n{'='*60}")
+            print(f"❌ 토큰 #{token_idx} ({token_address}) 처리 중 오류 발생")
+            print(f"❌ 오류: {str(e)}")
+            print(f"{'='*60}\n")
+        
+        # save results
         filepath = detector.save_results()
-        print(f"Result saved: {filepath}")
+        print(f"📄 상세 결과: {filepath}")
         print(f"{'='*60}\n")
 
     finally:

@@ -89,7 +89,7 @@ def run_scenario(detector):
         "details": {
             "holders_tested": [],
             "skipped_holders": [],
-            "failures": 0,
+            "failures": 0
         },
     }
 
@@ -145,12 +145,18 @@ def run_scenario(detector):
 
             _ensure_gas(holder_account, decimals)
             success, quote_received = utils.sell_tokens_to_pool(detector, holder_account, onchain_balance)
+            if not success:
+                result["details"]["failures"] += 1
+                result["details"]["holders_tested"].append(holder_record)
+                chain.revert()
+                continue
 
             quote_decimals = getattr(detector, "quote_token_decimals", 18)
             quote_received_dec = Decimal(quote_received) / (Decimal(10) ** quote_decimals)
-            if (quote_received_dec) <= 0.000009:
-                print(f"❌ sell failed | received: {quote_received_dec}")
-                success = False
+            # if (quote_received_dec) <= 0.000009:
+            #     print(f"❌ sell failed | received: {quote_received_dec}")
+            #     success = False
+
             holder_record["success"] = success
             holder_record["quote_received"] = quote_received
             result["details"]["holders_tested"].append(holder_record)
@@ -168,11 +174,10 @@ def run_scenario(detector):
 
     tested = len(result["details"]["holders_tested"])
     failures = result["details"]["failures"]
-
     if tested == 0:
         result["reason"] = "홀더 테스트를 수행하지 못했습니다."
     else:
-        if failures >= 2:
+        if failures >= 1:
             result["result"] = "YES"
             result["confidence"] = "HIGH"
             result["reason"] = f"{tested}명 중 {failures}명이 매도에 실패했습니다."

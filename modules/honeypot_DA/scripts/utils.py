@@ -1,7 +1,9 @@
 import csv
 from decimal import Decimal, InvalidOperation
-
-from brownie import Contract, chain
+from brownie.exceptions import VirtualMachineError
+from brownie import Contract, chain,network
+from scripts import v3_swap
+from typing import Callable, Optional
 
 
 def load_holders(csv_path, token_address, limit=None):
@@ -69,7 +71,7 @@ def load_holders(csv_path, token_address, limit=None):
 
 def buy_tokens_from_pool(analyzer, buyer, amount):
     """
-    Buy tokens from liquidity pool using Quote token (WETH or other ERC20).
+    Buy tokens from liquidity pool (V2 or V3)
 
     Args:
         analyzer: ScamAnalyzer instance
@@ -80,8 +82,11 @@ def buy_tokens_from_pool(analyzer, buyer, amount):
         bool: purchase success
     """
     if not analyzer.pair_address:
-        print("[warn] Pair address not found")
+        print("[warn] Pool address not found")
         return False
+
+    if analyzer.dex_version == "v3":
+        return v3_swap.buy_tokens_v3(analyzer, buyer, amount)
 
     if not analyzer.router:
         print("[warn] Router contract not found")
@@ -109,13 +114,15 @@ def buy_tokens_from_pool(analyzer, buyer, amount):
         if is_weth:
             # If quote is WETH, use swapETHForExactTokens
             max_eth = int(quote_needed * 1.2)  # 20% buffer
-            router.swapETHForExactTokens(
+            tx = router.swapETHForExactTokens(
                 amount,
                 path,
                 buyer.address,
                 deadline,
                 {"from": buyer, "value": max_eth}
             )
+            network.web3.provider.make_request("anvil_mine", [1])
+            tx.wait(1)
         else:
             # If quote is other ERC20 (DAI, USDT, etc.), prepare quote tokens first
             quote_token = analyzer.quote_token
@@ -133,7 +140,7 @@ def buy_tokens_from_pool(analyzer, buyer, amount):
 
             # Swap WETH -> Quote token (use swapTokensForExactTokens for precise amount)
             weth.approve(analyzer.router_addr, eth_amount, {"from": buyer})
-            router.swapTokensForExactTokens(
+            tx = router.swapTokensForExactTokens(
                 quote_needed,
                 eth_amount,
                 [weth_address, quote_addr],
@@ -141,6 +148,9 @@ def buy_tokens_from_pool(analyzer, buyer, amount):
                 deadline,
                 {"from": buyer}
             )
+            
+            network.web3.provider.make_request("anvil_mine", [1])
+            tx.wait(1)
 
             # Verify quote balance
             quote_balance = quote_token.balanceOf(buyer.address)
@@ -150,7 +160,7 @@ def buy_tokens_from_pool(analyzer, buyer, amount):
 
             # Swap Quote -> Target token
             quote_token.approve(analyzer.router_addr, quote_needed, {"from": buyer})
-            router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tx = router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
                 quote_needed,
                 0,
                 path,
@@ -158,7 +168,9 @@ def buy_tokens_from_pool(analyzer, buyer, amount):
                 deadline,
                 {"from": buyer}
             )
-
+            network.web3.provider.make_request("anvil_mine", [1])
+            tx.wait(1)
+            
         # Verify purchase
         tokens_bought = analyzer.token.balanceOf(buyer.address)
         decimals = analyzer.token.decimals()
@@ -172,7 +184,7 @@ def buy_tokens_from_pool(analyzer, buyer, amount):
 
 def sell_tokens_to_pool(analyzer, seller, amount):
     """
-    Sell tokens to liquidity pool for Quote token (WETH or other ERC20).
+    Sell tokens to liquidity pool (V2 or V3)
 
     Args:
         analyzer: ScamAnalyzer instance
@@ -183,8 +195,11 @@ def sell_tokens_to_pool(analyzer, seller, amount):
         tuple: (success: bool, quote_received: int)
     """
     if not analyzer.pair_address:
-        print("[warn] Pair address not found")
+        print("[warn] Pool address not found")
         return False, 0
+
+    if analyzer.dex_version == "v3":
+        return v3_swap.sell_tokens_v3(analyzer, seller, amount)
 
     if not analyzer.router:
         print("[warn] Router contract not found")
@@ -216,7 +231,10 @@ def sell_tokens_to_pool(analyzer, seller, amount):
                 deadline,
                 {"from": seller}
             )
-
+            
+            network.web3.provider.make_request("anvil_mine", [1])
+            tx.wait(1)
+            
             eth_after = seller.balance()
             gas_cost = tx.gas_used * tx.gas_price
             eth_received = eth_after - eth_before + gas_cost
@@ -229,7 +247,7 @@ def sell_tokens_to_pool(analyzer, seller, amount):
             quote_token = analyzer.quote_token
             quote_before = quote_token.balanceOf(seller.address)
 
-            router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tx = router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
                 amount,
                 0,
                 path,
@@ -237,6 +255,9 @@ def sell_tokens_to_pool(analyzer, seller, amount):
                 deadline,
                 {"from": seller}
             )
+            
+            network.web3.provider.make_request("anvil_mine", [1])
+            tx.wait(1)
 
             quote_after = quote_token.balanceOf(seller.address)
             quote_received = quote_after - quote_before
@@ -246,15 +267,80 @@ def sell_tokens_to_pool(analyzer, seller, amount):
             print(f"✅ User sold {amount / 10**decimals:.6f} tokens for {quote_received / 10**quote_decimals:.6f} quote tokens")
             return True, quote_received
 
-    except Exception as exc:
-        print(f"[warn] Token sale failed: {exc}")
+    except (VirtualMachineError, ValueError, Exception) as e:
+        error_msg = str(e) if str(e) else "Transaction reverted"
+        print(f"  ❌ sell failed | reason: {error_msg}")
+        # Debug: confirm exception was caught
+        print(f"  [DEBUG] Exception type: {type(e).__name__}")
         return False, 0
+    # except Exception as exc:
+    #     print(f"[warn] Token sale failed: {exc}")
+    #     return False, 0
+
+
+def ensure_eth_usd_price(router, weth_address, quote_tokens, quote_token_decimals, cache_obj=None):
+    """
+    Fetch 1 WETH -> USD stable price using the provided router; optionally cache on cache_obj.eth_usd_price.
+    """
+    cached = getattr(cache_obj, "eth_usd_price", None) if cache_obj else None
+    if cached is not None:
+        return cached
+
+    stable_paths = [
+        quote_tokens.get("USDC"),
+        quote_tokens.get("USDT"),
+    ]
+    amount_in = 10 ** 18  # 1 WETH
+
+    for stable_addr in stable_paths:
+        if not stable_addr:
+            continue
+        try:
+            amounts = router.getAmountsOut(amount_in, [weth_address, stable_addr])
+            decimals = quote_token_decimals.get(
+                next((k for k, v in quote_tokens.items() if v == stable_addr), ""),
+                18,
+            )
+            price = amounts[-1] / (10 ** decimals)
+            if price > 0:
+                if cache_obj is not None:
+                    setattr(cache_obj, "eth_usd_price", price)
+                return price
+        except Exception:
+            continue
+
+    if cache_obj is not None:
+        setattr(cache_obj, "eth_usd_price", None)
+    return None
+
+
+def quote_value_in_usd(quote_symbol, quote_reserve, quote_decimals, price_provider: Optional[Callable[[], Optional[float]]] = None):
+    """
+    Convert quote reserve into USD-equivalent value for fair pool comparison.
+
+    Args:
+        quote_symbol (str): symbol of the quote asset (e.g., WETH, USDT)
+        quote_reserve (int): raw reserve amount
+        quote_decimals (int): decimals for the quote asset
+        price_provider (callable | None): returns ETH price in USD when quote_symbol is WETH
+    """
+    if quote_reserve is None:
+        return 0
+
+    amount = quote_reserve / (10 ** quote_decimals)
+
+    if quote_symbol.upper() == "WETH":
+        eth_price = price_provider() if callable(price_provider) else None
+        if eth_price:
+            return amount * eth_price
+
+    # Stablecoins or fallback
+    return amount
 
 
 def measure_tax_via_trade(analyzer, buyer, quote_amount_to_spend):
     """
-    Measure actual buy and sell tax by performing real trades.
-    Supports both WETH and non-WETH quote tokens.
+    Measure actual buy and sell tax by performing real trades (V2 or V3)
 
     Args:
         analyzer: ScamAnalyzer instance
@@ -271,6 +357,9 @@ def measure_tax_via_trade(analyzer, buyer, quote_amount_to_spend):
             "error": str or None
         }
     """
+    if analyzer.dex_version == "v3":
+        return v3_swap.measure_tax_v3(analyzer, buyer, quote_amount_to_spend)
+
     result = {
         "buy_tax": None,
         "sell_tax": None,
