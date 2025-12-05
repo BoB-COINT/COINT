@@ -18,7 +18,7 @@ print("   삭제 완료!")
 # 데이터 수집
 collector = DataCollectorAdapter()
 analyzer = HoneypotDynamicAnalyzerAdapter()
-token_addr = "0x0A434553C582cdD165AC7083CddB959d413e08F0"
+token_addr = "0xf51e30Ca26e098d27Fd5341a898f72307a704AA7"
 
 print(f"\n🔍 수집 시작: {token_addr}")
 start_time = time.time()
@@ -43,7 +43,6 @@ print(f"   Pair Events: {token_info.pair_events.count()}")
 print(f"   Holders: {token_info.holders.count()}")
 print(f"   저장 시간: {save_time:.2f}초")
 
-token_info2= TokenInfo.objects.get(id=token_info.id)
-# print(token_info2)
-result_da = analyzer.analyze(token_info2)
-print(f"\n✅ 동적분석기 완료!")
+# token_info2= TokenInfo.objects.get(id=token_info.id)
+# result_da = analyzer.analyze(token_info2)
+# print(f"\n✅ 동적분석기 완료!")
