@@ -344,6 +344,8 @@ class HoneypotDynamicAnalyzerAdapter:
             cwd=str(self.module_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",   # 🔹 명시적으로 UTF-8 사용
+            errors="ignore",    # 🔹 디코딩 안 되는 바이트는 버리기
             timeout=600
         )
 
