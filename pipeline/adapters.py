@@ -102,6 +102,7 @@ class DataCollectorAdapter:
         token_info = TokenInfo.objects.create(
             token_addr=token_info_data['token_addr'],
             pair_addr=token_info_data['pair_addr'],
+            pair_creator=token_info_data['pair_creator'],
             token_create_ts=token_info_data['token_create_ts'],
             lp_create_ts=token_info_data['lp_create_ts'],
             pair_idx=token_info_data['pair_idx'],
@@ -156,13 +157,7 @@ class PreprocessorAdapter:
     """
 
     def __init__(self):
-        """
-        TODO: Import actual module when available.
-        Example:
-            from modules.preprocessor import DataPreprocessor
-            self.preprocessor = DataPreprocessor()
-        """
-        self.preprocessor = None
+        pass
 
     def process_for_honeypot(self, token_info: 'TokenInfo') -> Dict[str, Any]:
         """
@@ -184,26 +179,67 @@ class PreprocessorAdapter:
         """
         raise NotImplementedError("Module not integrated yet")
 
-    def process_for_exit(self, token_info: 'TokenInfo') -> List[Dict[str, Any]]:
+    def process_exit_instance(self, token_info: 'TokenInfo') -> int:
         """
-        Generate exit scam detection features (per 5-second window).
+        Generate exit instance-level features and save to DB.
 
-        Args:
-            token_info: TokenInfo with related pair_events and holders
+        Returns: number of rows saved.
+        """
+        from modules.preprocessor.exit_instance import ExitInstancePreprocessor
+        from api.models import ExitProcessedDataInstance
 
-        Returns:
-            List of dictionaries, each representing one 5-second window
-            with all 52 exit detection features as specified in DB schema
+        pre = ExitInstancePreprocessor()
+        rows = pre.compute_exit_features(token_info)
+        if not rows:
+            return 0
 
-        TODO: Replace with actual module call
-        Example:
-            return self.preprocessor.compute_exit_features(
-                token_addr_idx=token_info.id,
-                pair_events=token_info.pair_events.all(),
-                holders=token_info.holders.all()
+        ExitProcessedDataInstance.objects.filter(token_info=token_info).delete()
+
+        objects = []
+        for row in rows:
+            objects.append(
+                ExitProcessedDataInstance(
+                    token_info=token_info,
+                    event_time=row["event_time"],
+                    tx_hash=row.get("tx_hash") or "",
+                    delta_t_sec=row.get("delta_t_sec"),
+                    is_swap_event=bool(row.get("is_swap_event")),
+                    lp_total_supply=float(row["lp_total_supply"]) if row.get("lp_total_supply") is not None else None,
+                    reserve_base_drop_frac=row.get("reserve_base_drop_frac"),
+                    reserve_quote=float(row["reserve_quote"]) if row.get("reserve_quote") is not None else None,
+                    reserve_quote_drop_frac=row.get("reserve_quote_drop_frac"),
+                    price_ratio=row.get("price_ratio"),
+                    time_since_last_mint_sec=row.get("time_since_last_mint_sec"),
+                    lp_minted_amount_per_sec=float(row["lp_minted_amount_per_sec"]) if row.get("lp_minted_amount_per_sec") is not None else None,
+                    lp_burned_amount_per_sec=float(row["lp_burned_amount_per_sec"]) if row.get("lp_burned_amount_per_sec") is not None else None,
+                    recent_mint_ratio_last10=row.get("recent_mint_ratio_last10"),
+                    recent_mint_ratio_last20=row.get("recent_mint_ratio_last20"),
+                    recent_burn_ratio_last10=row.get("recent_burn_ratio_last10"),
+                    recent_burn_ratio_last20=row.get("recent_burn_ratio_last20"),
+                    reserve_quote_drawdown=row.get("reserve_quote_drawdown"),
+                    lp_total_supply_mask=row.get("lp_total_supply_mask"),
+                    reserve_quote_mask=row.get("reserve_quote_mask"),
+                    price_ratio_mask=row.get("price_ratio_mask"),
+                    time_since_last_mint_sec_mask=row.get("time_since_last_mint_sec_mask"),
+                )
             )
+
+        ExitProcessedDataInstance.objects.bulk_create(objects, batch_size=1000)
+        return len(objects)
+
+    def process_exit_static(self, token_info: 'TokenInfo') -> None:
         """
-        raise NotImplementedError("Module not integrated yet")
+        Generate exit static features and save to DB.
+        """
+        from modules.preprocessor.exit_static import ExitStaticPreprocessor
+        from api.models import ExitProcessedDataStatic
+
+        pre = ExitStaticPreprocessor()
+        data = pre.compute_static_features(token_info)
+        ExitProcessedDataStatic.objects.update_or_create(
+            token_info=token_info,
+            defaults=data,
+        )
 
     def save_honeypot_to_db(self, token_info: 'TokenInfo', data: Dict[str, Any]):
         """
@@ -216,22 +252,23 @@ class PreprocessorAdapter:
             **data
         )
 
-    def save_exit_to_db(self, token_info: 'TokenInfo', windows: List[Dict[str, Any]]) -> int:
-        """
-        Save exit scam features to database.
-        """
-        from api.models import ExitProcessedData
+    ##### [모듈에서 이미 DB에 저장하고 있음]
+    # def save_exit_to_db(self, token_info: 'TokenInfo', windows: List[Dict[str, Any]]) -> int:
+    #     """
+    #     Save exit scam features to database.
+    #     """
+    #     from api.models import ExitProcessedData
 
-        records = [
-            ExitProcessedData(
-                token_info=token_info,
-                **window
-            )
-            for window in windows
-        ]
+    #     records = [
+    #         ExitProcessedData(
+    #             token_info=token_info,
+    #             **window
+    #         )
+    #         for window in windows
+    #     ]
 
-        ExitProcessedData.objects.bulk_create(records, batch_size=1000)
-        return len(records)
+    #     ExitProcessedData.objects.bulk_create(records, batch_size=1000)
+    #     return len(records)
 
 
 class HoneypotDynamicAnalyzerAdapter:
@@ -684,133 +721,93 @@ class ExitMLAnalyzerAdapter:
     Adapter for modules/exit_ML.
     ML-based exit scam detection using attention-based MIL model.
 
-    Input: TokenInfo instance (token_addr)
-    Output: ML prediction results (dict) + DB storage
+    Input: TokenInfo instance
+    Output: ML prediction results (dict)
     Database: Inserts into exit_ml_result, exit_ml_detect_transaction, exit_ml_detect_static
     """
 
     def __init__(self):
-        """Initialize adapter and set up paths."""
-        from pathlib import Path
+        pass
 
-        self.module_path = Path(__file__).parent.parent / "modules" / "exit_ML"
-        self.artifact_dir = self.module_path
-        self.feature_csv = self.module_path / "features_exit_mil_new2.csv"
-        self.static_csv = self.module_path / "features_exit_static3.csv"
-        self.token_info_csv = self.module_path / "token_information3.csv"
-
-    def predict(self, token_info: 'TokenInfo') -> Dict[str, Any]:
+    def run(self, token_info: 'TokenInfo', save_to_db: bool = True) -> Dict[str, Any]:
         """
-        Run ML model for exit scam prediction.
-
-        Args:
-            token_info: TokenInfo instance
-
-        Returns:
-            Dictionary containing:
-                - token_addr: str
-                - probability: float (0-1)
-                - detect_tx_1: Dict (timestamp, tx_hash, feature_values)
-                - detect_tx_2: Dict (or None)
-                - detect_tx_3: Dict (or None)
-                - detect_static: Dict (static feature values)
+        Run MIL inference using DB-backed features.
+        If save_to_db=True, results are persisted to ExitMlResult and related tables.
         """
-        import sys
-        sys.path.insert(0, str(self.module_path))
+        from modules.exit_ML.run_exit_detect import (
+            run_exit_detection,
+            INSTANCE_OUTPUT_FEATURES,
+            STATIC_OUTPUT_FEATURES,
+        )
+        from api.models import ExitMlResult, ExitMlDetectTransaction, ExitMlDetectStatic
+        from dateutil import parser as date_parser
 
-        try:
-            from run_mil_inference import run_inference
-        except ImportError as e:
-            raise RuntimeError(f"Failed to import run_mil_inference: {e}")
+        result = run_exit_detection(token_info.id)
 
-        # Run inference using the module's function
-        result = run_inference(
-            token_addr=token_info.token_addr,
-            feature_path=self.feature_csv,
-            static_path=self.static_csv,
-            token_info_path=self.token_info_csv,
-            artifact_dir=self.artifact_dir,
-            output_path=None  # Don't write to file
+        if not save_to_db:
+            return result
+
+        tx_cnt_val = int(result.get("tx_cnt") or 0)
+        tx_ts_val = result.get("timestamp")
+        tx_hash_val = result.get("tx_hash")
+        feat_vals = {k: result.get(k) for k in INSTANCE_OUTPUT_FEATURES}
+        static_vals = {k: result.get(k) for k in STATIC_OUTPUT_FEATURES}
+
+        ts_parsed = None
+        if tx_ts_val:
+            try:
+                ts_parsed = date_parser.isoparse(tx_ts_val)
+            except Exception:
+                ts_parsed = None
+
+        exit_result, _ = ExitMlResult.objects.update_or_create(
+            token_info=token_info,
+            defaults={
+                "probability": result["probability"],
+                "tx_cnt": tx_cnt_val,
+                "timestamp": ts_parsed,
+                "tx_hash": tx_hash_val or "",
+                "reserve_base_drop_frac": float(feat_vals.get("reserve_base_drop_frac") or 0.0),
+                "reserve_quote": float(feat_vals.get("reserve_quote") or 0.0),
+                "reserve_quote_drop_frac": float(feat_vals.get("reserve_quote_drop_frac") or 0.0),
+                "price_ratio": float(feat_vals.get("price_ratio") or 0.0),
+                "time_since_last_mint_sec": float(feat_vals.get("time_since_last_mint_sec") or 0.0),
+                "liquidity_age_days": float(static_vals.get("liquidity_age_days") or 0.0),
+                "reserve_quote_drawdown_global": float(static_vals.get("reserve_quote_drawdown_global") or 0.0),
+            },
+        )
+
+        # Top transaction (rank 1)
+        tx_data = {
+            "timestamp": result.get("timestamp"),
+            "tx_hash": result.get("tx_hash"),
+            "feature_values": {k: result.get(k) for k in INSTANCE_OUTPUT_FEATURES},
+        }
+
+        ts_val = tx_data.get("timestamp")
+        ts_parsed = None
+        if ts_val:
+            try:
+                ts_parsed = date_parser.isoparse(ts_val)
+            except Exception:
+                ts_parsed = None
+
+        ExitMlDetectTransaction.objects.update_or_create(
+            exit_ml_result=exit_result,
+            rank=1,
+            defaults={
+                "timestamp": ts_parsed,
+                "tx_hash": tx_data.get("tx_hash"),
+                "feature_values": tx_data.get("feature_values", {}),
+            },
+        )
+
+        ExitMlDetectStatic.objects.update_or_create(
+            exit_ml_result=exit_result,
+            defaults={"feature_values": {k: result.get(k) for k in STATIC_OUTPUT_FEATURES}},
         )
 
         return result
-
-    def save_to_db(self, token_info: 'TokenInfo', result: Dict[str, Any]):
-        """
-        Save exit ML results to database.
-
-        Args:
-            token_info: TokenInfo instance
-            result: Dictionary from predict() method
-        """
-        from api.models import ExitMlResult, ExitMlDetectTransaction, ExitMlDetectStatic
-        from datetime import datetime
-
-        probability = float(result.get('probability', 0.0))
-
-        # Load threshold from training.json
-        import json
-        training_json_path = self.module_path / "attention_mil_training.json"
-        threshold = 0.6047  # default
-        if training_json_path.exists():
-            with open(training_json_path) as f:
-                training_data = json.load(f)
-                threshold = training_data.get('best_threshold', threshold)
-
-        is_exit_scam = probability >= threshold
-
-        # Create or update ExitMlResult
-        exit_ml_result, created = ExitMlResult.objects.update_or_create(
-            token_info=token_info,
-            defaults={
-                'probability': probability,
-                'threshold': threshold,
-                'is_exit_scam': is_exit_scam
-            }
-        )
-
-        # Save detect transactions (top 3)
-        for rank in [1, 2, 3]:
-            detect_key = f"detect_tx_{rank}"
-            detect_data = result.get(detect_key)
-
-            if detect_data is None:
-                continue
-
-            # Parse timestamp
-            timestamp = None
-            if detect_data.get('timestamp'):
-                try:
-                    from dateutil import parser as date_parser
-                    timestamp = date_parser.isoparse(detect_data['timestamp'])
-                except:
-                    pass
-
-            # Extract feature values (exclude timestamp and tx_hash)
-            feature_values = {
-                k: v for k, v in detect_data.items()
-                if k not in ['timestamp', 'tx_hash']
-            }
-
-            ExitMlDetectTransaction.objects.update_or_create(
-                exit_ml_result=exit_ml_result,
-                rank=rank,
-                defaults={
-                    'timestamp': timestamp,
-                    'tx_hash': detect_data.get('tx_hash'),
-                    'feature_values': feature_values
-                }
-            )
-
-        # Save detect static features
-        detect_static = result.get('detect_static', {})
-        if detect_static:
-            ExitMlDetectStatic.objects.update_or_create(
-                exit_ml_result=exit_ml_result,
-                defaults={
-                    'feature_values': detect_static
-                }
-            )
 
 
 class ResultAggregatorAdapter:
