@@ -6,8 +6,6 @@ Reads preprocessed features from:
   - ExitProcessedDataStatic (per-token)
 Applies attention MIL model artifacts in this directory and saves results to:
   - ExitMlResult
-  - ExitMlDetectTransaction (top-1)
-  - ExitMlDetectStatic
 """
 
 from __future__ import annotations
@@ -176,8 +174,6 @@ def run_exit_detection(token_info_id: int) -> Dict[str, object]:
         ExitProcessedDataInstance,
         ExitProcessedDataStatic,
         ExitMlResult,
-        ExitMlDetectTransaction,
-        ExitMlDetectStatic,
         TokenInfo,
     )
 

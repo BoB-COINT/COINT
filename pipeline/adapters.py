@@ -145,6 +145,59 @@ class DataCollectorAdapter:
         return token_info
 
 
+class DetectUnformedLpAdapter:
+    """
+    Adapter to mark Unformed LP tokens before further processing.
+    Reads DB events to decide and, if Unformed, writes ExitMlResult with is_unformed_lp=1.
+    """
+
+    def __init__(self, usd_threshold: float = 2000.0, swap_threshold: int = 2):
+        from modules.detect_unformed_lp.find_uf_lp import detect_unformed_lp
+
+        self.detect_unformed_lp = detect_unformed_lp
+        self.usd_threshold = usd_threshold
+        self.swap_threshold = swap_threshold
+
+    def run(self) -> Dict[str, Any]:
+        """
+        Run Unformed LP detection for the single TokenInfo in DB.
+        If Unformed, persist ExitMlResult with is_unformed_lp=1 and nullify other optional fields.
+        """
+        from api.models import ExitMlResult
+
+        result = self.detect_unformed_lp(
+            usd_threshold=self.usd_threshold,
+            swap_threshold=self.swap_threshold,
+        )
+
+        if not result.get("is_unformed_lp"):
+            return result
+
+        token = result["token_info"]
+        defaults = {
+            "is_unformed_lp": 1,
+            "probability": None,
+            "tx_cnt": None,
+            "timestamp": None,
+            "tx_hash": None,
+            "reserve_base_drop_frac": None,
+            "reserve_quote": None,
+            "reserve_quote_drop_frac": None,
+            "price_ratio": None,
+            "time_since_last_mint_sec": None,
+            "liquidity_age_days": None,
+            "reserve_quote_drawdown_global": None,
+        }
+
+        exit_res, _ = ExitMlResult.objects.update_or_create(
+            token_info=token,
+            defaults=defaults,
+        )
+
+        result["exit_ml_result"] = exit_res
+        return result
+
+
 class PreprocessorAdapter:
     """
     Adapter for modules/preprocessor.
@@ -577,7 +630,7 @@ class ExitMLAnalyzerAdapter:
             INSTANCE_OUTPUT_FEATURES,
             STATIC_OUTPUT_FEATURES,
         )
-        from api.models import ExitMlResult, ExitMlDetectTransaction, ExitMlDetectStatic
+        from api.models import ExitMlResult
         from dateutil import parser as date_parser
 
         result = run_exit_detection(token_info.id)
@@ -613,36 +666,6 @@ class ExitMLAnalyzerAdapter:
                 "liquidity_age_days": float(static_vals.get("liquidity_age_days") or 0.0),
                 "reserve_quote_drawdown_global": float(static_vals.get("reserve_quote_drawdown_global") or 0.0),
             },
-        )
-
-        # Top transaction (rank 1)
-        tx_data = {
-            "timestamp": result.get("timestamp"),
-            "tx_hash": result.get("tx_hash"),
-            "feature_values": {k: result.get(k) for k in INSTANCE_OUTPUT_FEATURES},
-        }
-
-        ts_val = tx_data.get("timestamp")
-        ts_parsed = None
-        if ts_val:
-            try:
-                ts_parsed = date_parser.isoparse(ts_val)
-            except Exception:
-                ts_parsed = None
-
-        ExitMlDetectTransaction.objects.update_or_create(
-            exit_ml_result=exit_result,
-            rank=1,
-            defaults={
-                "timestamp": ts_parsed,
-                "tx_hash": tx_data.get("tx_hash"),
-                "feature_values": tx_data.get("feature_values", {}),
-            },
-        )
-
-        ExitMlDetectStatic.objects.update_or_create(
-            exit_ml_result=exit_result,
-            defaults={"feature_values": {k: result.get(k) for k in STATIC_OUTPUT_FEATURES}},
         )
 
         return result

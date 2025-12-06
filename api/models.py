@@ -689,26 +689,60 @@ class ExitMlResult(models.Model):
         primary_key=True,
         db_column='token_addr_idx'
     )
-
+    is_unformed_lp = models.IntegerField(
+        default = 0,
+        help_text="Is not Unformed-LP"
+    )
     probability = models.FloatField(
+        null = True,
+        blank = True,
         help_text="Exit scam probability (0-1)"
     )
-    tx_cnt = models.IntegerField()
-    timestamp = models.DateTimeField()
+    tx_cnt = models.IntegerField(
+        null = True,
+        blank = True
+    )
+    timestamp = models.DateTimeField(
+        null = True,
+        blank = True
+    )
     tx_hash = models.CharField(
-        max_length = 66
+        max_length = 66,
+        null = True,
+        blank = True
     )
 
     # Top Instance Feature
-    reserve_base_drop_frac = models.FloatField()
-    reserve_quote = models.FloatField()
-    reserve_quote_drop_frac = models.FloatField()
-    price_ratio = models.FloatField()
-    time_since_last_mint_sec = models.FloatField()
+    reserve_base_drop_frac = models.FloatField(
+        null = True,
+        blank = True
+    )
+    reserve_quote = models.FloatField(
+        null = True,
+        blank = True
+    )
+    reserve_quote_drop_frac = models.FloatField(
+        null = True,
+        blank = True
+    )
+    price_ratio = models.FloatField(
+        null = True,
+        blank = True
+    )
+    time_since_last_mint_sec = models.FloatField(
+        null = True,
+        blank = True
+    )
     
     # Static Feature
-    liquidity_age_days = models.FloatField()
-    reserve_quote_drawdown_global = models.FloatField()
+    liquidity_age_days = models.FloatField(
+        null = True,
+        blank = True
+    )
+    reserve_quote_drawdown_global = models.FloatField(
+        null = True,
+        blank = True
+    )
 
     created_at = models.DateTimeField(default=timezone.now)
 
@@ -717,66 +751,3 @@ class ExitMlResult(models.Model):
 
     def __str__(self):
         return f"Exit ML result for token {self.token_info.id} (prob: {self.probability:.4f})"
-
-
-class ExitMlDetectTransaction(models.Model):
-    """
-    Stores top suspicious transactions detected by exit_ML model.
-    Up to 3 records per ExitMlResult (detect_tx_1, detect_tx_2, detect_tx_3).
-    """
-    exit_ml_result = models.ForeignKey(
-        ExitMlResult,
-        on_delete=models.CASCADE,
-        related_name='detect_transactions',
-        db_column='exit_ml_result_id'
-    )
-
-    rank = models.IntegerField(
-        help_text="Transaction rank (1, 2, or 3)"
-    )
-    timestamp = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="Transaction timestamp"
-    )
-    tx_hash = models.CharField(
-        max_length=66,
-        null=True,
-        blank=True,
-        help_text="Transaction hash"
-    )
-    feature_values = models.JSONField(
-        help_text="Top instance feature values (scaled) as JSON"
-    )
-
-    class Meta:
-        db_table = 'exit_ml_detect_transaction'
-        ordering = ['exit_ml_result', 'rank']
-        unique_together = [['exit_ml_result', 'rank']]
-
-    def __str__(self):
-        return f"Detect TX {self.rank} for result {self.exit_ml_result_id}"
-
-
-class ExitMlDetectStatic(models.Model):
-    """
-    Stores static (bag-level) features detected by exit_ML model.
-    One record per ExitMlResult.
-    """
-    exit_ml_result = models.OneToOneField(
-        ExitMlResult,
-        on_delete=models.CASCADE,
-        related_name='detect_static',
-        primary_key=True,
-        db_column='exit_ml_result_id'
-    )
-
-    feature_values = models.JSONField(
-        help_text="Top static feature values as JSON"
-    )
-
-    class Meta:
-        db_table = 'exit_ml_detect_static'
-
-    def __str__(self):
-        return f"Detect static for result {self.exit_ml_result_id}"
