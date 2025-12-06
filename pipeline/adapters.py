@@ -156,27 +156,70 @@ class PreprocessorAdapter:
     """
 
     def __init__(self):
-        pass
+        from modules.preprocessor.generate_features_honeypot import (
+            compute_honeypot_features,
+        )        
+        self.compute_honeypot_features = compute_honeypot_features
 
     def process_for_honeypot(self, token_info: 'TokenInfo') -> Dict[str, Any]:
-        """
-        Generate honeypot detection features.
+        from api.models import PairEvent, HolderInfo, HoneypotDaResult
 
-        Args:
-            token_info: TokenInfo with related pair_events and holders
+        # 1) DB → raw records
+        pair_events = PairEvent.objects.filter(token_info=token_info).values(
+            "timestamp",
+            "evt_type",
+            "tx_from",
+            "tx_to",
+            "evt_log",
+        )
+        holders = HolderInfo.objects.filter(token_info=token_info).values(
+            "holder_addr",
+            "balance",
+            "rel_to_total",
+        )
 
-        Returns:
-            Dictionary with all 23 honeypot features as specified in DB schema
+        # 2) modules.generate_features_honeypot 호출
+        features = self.compute_honeypot_features(
+            token_addr=token_info.token_addr,
+            owner_addr=token_info.token_creator_addr or "",
+            pair_evt_records=pair_events,
+            holder_records=holders,
+        )
 
-        TODO: Replace with actual module call
-        Example:
-            return self.preprocessor.compute_honeypot_features(
-                token_addr_idx=token_info.id,
-                pair_events=token_info.pair_events.all(),
-                holders=token_info.holders.all()
-            )
-        """
-        raise NotImplementedError("Module not integrated yet")
+        # 🔐 token_addr 은 항상 TokenInfo 기준으로 강제 세팅
+        features["token_addr"] = token_info.token_addr
+
+        # 3) HoneypotDaResult → 동적 플래그 merge
+        da = HoneypotDaResult.objects.filter(token_info=token_info).first()
+        if da is not None:
+            dyn_flags = {
+                # === buy 시나리오 ===
+                "buy_1": int(bool(da.buy_1)),
+                "buy_2": int(bool(da.buy_2)),
+                "buy_3": int(bool(da.buy_3)),
+
+                # === sell 시나리오 결과 → sell_result_X ===
+                "sell_result_1": int(bool(da.sell_1)),
+                "sell_result_2": int(bool(da.sell_2)),
+                "sell_result_3": int(bool(da.sell_3)),
+
+                # === sell 실패 타입 (그대로 int 저장) ===
+                "sell_fail_type_1": int(da.sell_fail_type_1 or 0),
+                "sell_fail_type_2": int(da.sell_fail_type_2 or 0),
+                "sell_fail_type_3": int(da.sell_fail_type_3 or 0),
+
+                # === 기타 동적 분석 결과 ===
+                "trading_suspend_check": int(bool(da.trading_suspend_result)),
+                "exterior_call_check": int(bool(da.exterior_call_result)),
+                "unlimited_mint": int(bool(da.unlimited_mint_result)),
+                "balance_manipulation": int(bool(da.balance_manipulation_result)),
+                "tax_manipulation": int(bool(da.tax_manipulation_result)),
+                "existing_holders_check": int(bool(da.existing_holders_result)),
+            }
+            features.update(dyn_flags)
+
+
+        return features
 
     def process_exit_instance(self, token_info: 'TokenInfo') -> int:
         """
@@ -373,344 +416,139 @@ class HoneypotDynamicAnalyzerAdapter:
 
 class HoneypotMLAnalyzerAdapter:
     """
-    Adapter for modules/honeypot_ML.
-    ML-based honeypot detection using XGBoost.
+    Adapter for modules/honeypot_ML (v12).
+    ML-based honeypot detection using XGBoost v12 model.
 
     Input: HoneypotProcessedData
-    Output: ML prediction results (dict)
-    Database: Results stored in memory, aggregated later (TODO)
+    Output: HoneypotMlResult (DB 저장)
     """
 
     def __init__(self):
-        """Initialize and load XGBoost model."""
-        from pathlib import Path
-        import xgboost as xgb
-        import pandas as pd
+        """Initialize v12 model module."""
+        from modules.honeypot_ML.predict_v12 import (
+            run_v12_inference,
+            load_model_and_threshold,
+        )
 
-        self.module_path = Path(__file__).parent.parent / "modules" / "honeypot_ML"
+        # v12 모듈 함수 보관
+        self.run_v12_inference = run_v12_inference
 
-        # Load model
-        model_path = self.module_path / "input" / "model_v8_addZero.json"
-        self.model = xgb.XGBClassifier()
-        self.model.load_model(str(model_path))
+        # 모델 & best threshold 한 번만 로드해서 threshold 저장
+        _, best_thr = load_model_and_threshold()
+        self.threshold = float(best_thr)
 
-        # Load metadata
-        meta_path = self.module_path / "input" / "metadata_v8_addZero.csv"
-        meta_row = pd.read_csv(meta_path).iloc[0]
-
-        # v8 metadata uses 'best_threshold_val' instead of 'threshold'
-        self.threshold = float(meta_row.get('best_threshold_val', 0.5))
-
-        # v8 metadata doesn't have removed_features or threshold_dynamic_levels
-        self.removed_features = []
-
-        # Use default threshold levels for v8
+        # 리스크 레벨 기준 (MEDIUM = best_thr)
         self.threshold_levels = {
-            'CRITICAL': 0.95,
-            'HIGH': 0.85,
-            'MEDIUM': 0.64,  # Using v8 threshold
-            'LOW': 0.4
+            "CRITICAL": 0.95,
+            "HIGH": 0.85,
+            "MEDIUM": self.threshold,
+            "LOW": 0.40,
         }
-
-        # Features to remove (BASE_REMOVE)
-        self.BASE_REMOVE = [
-            'whale_total_pct', 'small_holders_pct', 'holder_balance_std',
-            'holder_balance_cv', 'hhi_index', 'whale_count'
-        ]
-
-    def _parse_removed_features(self, x) -> list:
-        """Parse removed_features from metadata."""
-        import json
-        import ast
-        import pandas as pd
-
-        if pd.isna(x):
-            return []
-        s = str(x).strip()
-        if s in ("", "[]"):
-            return []
-        try:
-            return list(ast.literal_eval(s))
-        except Exception:
-            try:
-                return json.loads(s)
-            except Exception:
-                return []
-
-    def _parse_threshold_levels(self, x) -> dict:
-        """Parse threshold_dynamic_levels from metadata."""
-        import pandas as pd
-
-        if pd.isna(x):
-            return {}
-        s = str(x).strip()
-        try:
-            parsed = eval(s)
-            return {k: float(v) for k, v in parsed.items()}
-        except Exception:
-            return {}
 
     def _determine_risk_level(self, prob: float) -> str:
         """Determine risk level based on probability and thresholds."""
-        if not self.threshold_levels:
-            if prob >= 0.9:
-                return 'CRITICAL'
-            elif prob >= 0.7:
-                return 'HIGH'
-            elif prob >= 0.5:
-                return 'MEDIUM'
-            elif prob >= 0.3:
-                return 'LOW'
-            else:
-                return 'VERY_LOW'
-
-        thr_critical = self.threshold_levels.get('CRITICAL', 0.999)
-        thr_high = self.threshold_levels.get('HIGH', 0.997)
-        thr_medium = self.threshold_levels.get('MEDIUM', 0.6)
-        thr_low = self.threshold_levels.get('LOW', 0.3)
+        thr_critical = self.threshold_levels.get("CRITICAL", 0.95)
+        thr_high = self.threshold_levels.get("HIGH", 0.85)
+        thr_medium = self.threshold_levels.get("MEDIUM", 0.5)
+        thr_low = self.threshold_levels.get("LOW", 0.3)
 
         if prob >= thr_critical:
-            return 'CRITICAL'
+            return "CRITICAL"
         elif prob >= thr_high:
-            return 'HIGH'
+            return "HIGH"
         elif prob >= thr_medium:
-            return 'MEDIUM'
+            return "MEDIUM"
         elif prob >= thr_low:
-            return 'LOW'
+            return "LOW"
         else:
-            return 'VERY_LOW'
+            return "VERY_LOW"
 
-    def _calculate_holder_statistics(self, token_info: 'TokenInfo') -> dict:
-        """Calculate holder statistics from HolderInfo table (only gini and total_holders)."""
-        from api.models import HolderInfo
-        import numpy as np
-
-        holders = HolderInfo.objects.filter(token_info=token_info).order_by('-balance')
-
-        if not holders.exists():
-            return {
-                'gini_coefficient': 0.0,
-                'total_holders': 0
-            }
-
-        total_holders = holders.count()
-        balances = [float(h.balance) for h in holders]
-        total_supply = sum(balances)
-
-        if total_supply == 0:
-            return {
-                'gini_coefficient': 0.0,
-                'total_holders': total_holders
-            }
-
-        # Gini coefficient
-        sorted_balances = sorted(balances)
-        n = len(sorted_balances)
-        index = np.arange(1, n + 1)
-        gini = (2 * np.sum(index * sorted_balances)) / (n * np.sum(sorted_balances)) - (n + 1) / n
-
-        return {
-            'gini_coefficient': gini,
-            'total_holders': total_holders
-        }
-
-    def _create_advanced_features(self, df):
-        """Feature engineering (same as training)."""
-        import pandas as pd
-        import numpy as np
-
-        df = df.copy()
-
-        # Interaction features
-        df['sell_vol_per_cnt'] = df['total_sell_vol'] / (df['total_sell_cnt'] + 1)
-        df['buy_vol_per_cnt'] = df['total_buy_vol'] / (df['total_buy_cnt'] + 1)
-        df['sell_buy_cnt_ratio'] = df['total_sell_cnt'] / (df['total_buy_cnt'] + 1)
-        df['sell_buy_vol_ratio'] = df['total_sell_vol'] / (df['total_buy_vol'] + 1)
-
-        df['owner_sell_ratio'] = df['total_owner_sell_cnt'] / (df['total_sell_cnt'] + 1)
-        df['non_owner_sell_ratio'] = df['total_non_owner_sell_cnt'] / (df['total_sell_cnt'] + 1)
-
-        df['seller_buyer_ratio'] = df['unique_sellers'] / (df['unique_buyers'] + 1)
-        df['avg_sell_per_seller'] = df['total_sell_cnt'] / (df['unique_sellers'] + 1)
-        df['avg_buy_per_buyer'] = df['total_buy_cnt'] / (df['unique_buyers'] + 1)
-        df['trade_balance'] = (df['total_buy_cnt'] - df['total_sell_cnt']) / (df['total_buy_cnt'] + df['total_sell_cnt'] + 1)
-
-        # Statistical features
-        df['liquidity_ratio'] = df['windows_with_activity'] / (df['total_windows'] + 1)
-        df['sell_concentration'] = df['max_sell_share'] * df['total_sell_cnt']
-        df['activity_intensity'] = (df['windows_with_activity'] / (df['total_windows'] + 1)) * (df['total_sell_cnt'] + df['total_buy_cnt'])
-        df['vol_log_diff'] = df['total_sell_vol_log'] - df['total_buy_vol_log']
-        df['block_window_ratio'] = df['total_sell_block_windows'] / (df['consecutive_sell_block_windows'] + 1)
-
-        # Domain features
-        df['high_concentration'] = (df['max_sell_share'] > 0.5).astype(int)
-
-        # Log transformations
-        for col in ['sell_vol_per_cnt', 'buy_vol_per_cnt', 'sell_concentration']:
-            df[f'{col}_log'] = np.log1p(df[col])
-
-        return df
-
-    def _clean_data(self, df):
-        """Clean data (handle inf, nan, clip values)."""
-        import numpy as np
-
-        df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
-        float32_min, float32_max = np.finfo(np.float32).min, np.finfo(np.float32).max
-        num_cols = df.select_dtypes(include=np.number).columns
-        df[num_cols] = df[num_cols].clip(lower=float32_min, upper=float32_max)
-
-        return df
-
-    def _compute_feature_contributions(self, X, feature_names):
+    def predict(self, processed_data: "HoneypotProcessedData") -> Dict[str, Any]:
         """
-        Compute feature contributions using XGBoost pred_contribs.
-
-        Args:
-            X: numpy array (1 sample)
-            feature_names: list of feature names
-
-        Returns:
-            list of top-5 contributing features
-        """
-        import xgboost as xgb
-
-        # XGBoost DMatrix
-        dmatrix = xgb.DMatrix(X, feature_names=feature_names)
-
-        # Get contributions (shape: n_samples x n_features+1)
-        # Last column is bias
-        contribs = self.model.get_booster().predict(dmatrix, pred_contribs=True)
-
-        # Single sample
-        sample_contribs = contribs[0]
-        bias = sample_contribs[-1]
-        feature_contribs = sample_contribs[:-1]
-
-        # Build contribution list
-        contrib_list = []
-        for j, (fname, contrib) in enumerate(zip(feature_names, feature_contribs)):
-            contrib_list.append({
-                'feature': fname,
-                'contribution': float(contrib),
-                'abs_contribution': float(abs(contrib)),
-                'direction': 'increases_risk' if contrib > 0 else 'decreases_risk',
-                'feature_value': float(X[0, j])
-            })
-
-        # Sort by absolute contribution
-        contrib_list.sort(key=lambda x: x['abs_contribution'], reverse=True)
-
-        # Return top 5
-        return contrib_list[:5]
-
-    def predict(self, processed_data: 'HoneypotProcessedData') -> Dict[str, Any]:
-        """
-        Run ML model for honeypot prediction with feature contributions.
+        Run v12 ML model for honeypot prediction.
 
         Args:
             processed_data: HoneypotProcessedData instance
 
         Returns:
-            Dictionary containing:
+            dict:
                 - is_honeypot: bool
-                - probability: float (0-1)
-                - risk_level: str (CRITICAL/HIGH/MEDIUM/LOW/VERY_LOW)
+                - probability: float
+                - risk_level: str
                 - threshold: float
-                - top_contributing_features: list (top 5)
+                - top_feats: [top1_feat, ..., top5_feat]
+                - status: str
         """
         import pandas as pd
+        from django.forms.models import model_to_dict
 
         token_info = processed_data.token_info
 
-        # 1. Calculate holder statistics
-        holder_stats = self._calculate_holder_statistics(token_info)
+        # 1) Django model → dict → DataFrame (v12 모듈 입력 형식으로 정리)
+        row_dict = model_to_dict(processed_data)
 
-        # 2. Build DataFrame with base features
-        data = {
-            'total_buy_cnt': processed_data.total_buy_cnt,
-            'total_sell_cnt': processed_data.total_sell_cnt,
-            'total_owner_sell_cnt': processed_data.total_owner_sell_cnt,
-            'total_non_owner_sell_cnt': processed_data.total_non_owner_sell_cnt,
-            'imbalance_rate': processed_data.imbalance_rate,
-            'total_windows': processed_data.total_windows,
-            'windows_with_activity': processed_data.windows_with_activity,
-            'total_burn_events': processed_data.total_burn_events,
-            'total_mint_events': processed_data.total_mint_events,
-            's_owner_count': processed_data.s_owner_count,
-            'total_sell_vol': float(processed_data.total_sell_vol),
-            'total_buy_vol': float(processed_data.total_buy_vol),
-            'total_owner_sell_vol': float(processed_data.total_owner_sell_vol),
-            'total_sell_vol_log': processed_data.total_sell_vol_log,
-            'total_buy_vol_log': processed_data.total_buy_vol_log,
-            'total_owner_sell_vol_log': processed_data.total_owner_sell_vol_log,
-            'liquidity_event_mask': processed_data.liquidity_event_mask,
-            'max_sell_share': processed_data.max_sell_share,
-            'unique_sellers': processed_data.unique_sellers,
-            'unique_buyers': processed_data.unique_buyers,
-            'consecutive_sell_block_windows': processed_data.consecutive_sell_block_windows,
-            'total_sell_block_windows': processed_data.total_sell_block_windows,
-            **holder_stats
-        }
+        # v12 모듈이 기대하는 추가 컬럼 세팅
+        # token_addr_idx는 따로 없으니 token_info.id를 사용 (모델엔 큰 영향 X)
+        row_dict["token_addr_idx"] = token_info.id
+        row_dict["token_addr"] = token_info.token_addr
 
-        df = pd.DataFrame([data])
+        df_raw = pd.DataFrame([row_dict])
 
-        # 3. Remove BASE_REMOVE features
-        df = df[[c for c in df.columns if c not in self.BASE_REMOVE]]
+        # 2) v12 모듈 호출 (SHAP 기반 top5 feat 포함)
+        df_out = self.run_v12_inference(df_raw, compute_shap=True)
+        row = df_out.iloc[0]
 
-        # 4. Feature engineering
-        df = self._create_advanced_features(df)
-        df = self._clean_data(df)
+        prob = float(row["y_proba"])
+        pred = int(row["y_pred"])
+        status = row.get("status", "PRED_ONLY")
 
-        # 5. Remove metadata removed_features
-        if self.removed_features:
-            df = df[[c for c in df.columns if c not in self.removed_features]]
+        # 3) 리스크 레벨 계산
+        risk_level = self._determine_risk_level(prob)
 
-        # 6. Align features with model
-        if hasattr(self.model, "feature_names_in_"):
-            need = list(self.model.feature_names_in_)
-            for c in need:
-                if c not in df.columns:
-                    df[c] = 0.0
-            df = df[need]
-
-        # 7. Predict
-        X = df.values
-        feature_names = df.columns.tolist()
-
-        proba = self.model.predict_proba(X)[:, 1][0]
-        pred = int(proba >= self.threshold)
-        risk_level = self._determine_risk_level(proba)
-
-        # 8. Compute feature contributions
-        top_features = self._compute_feature_contributions(X, feature_names)
+        # 4) top1_feat ~ top5_feat 추출
+        top_feats: list[str | None] = []
+        for i in range(1, 6):
+            col = f"top{i}_feat"
+            val = row.get(col) if col in df_out.columns else None
+            # NaN이면 None으로 정리
+            if pd.isna(val) if val is not None else False:
+                val = None
+            top_feats.append(val)
 
         result = {
-            'is_honeypot': bool(pred == 1),
-            'probability': float(proba),
-            'risk_level': risk_level,
-            'threshold': float(self.threshold),
-            'top_contributing_features': top_features
+            "is_honeypot": bool(pred == 1),
+            "probability": prob,
+            "risk_level": risk_level,
+            "threshold": float(self.threshold),
+            "top_feats": top_feats,
+            "status": status,
         }
 
-        # Save to DB
+        # 5) DB 저장
         self._save_to_db(token_info, result)
 
         return result
 
-    def _save_to_db(self, token_info: 'TokenInfo', result: Dict[str, Any]):
-        """Save honeypot ML results to database."""
+    def _save_to_db(self, token_info: "TokenInfo", result: Dict[str, Any]):
+        """Save honeypot ML results to HoneypotMlResult table."""
         from api.models import HoneypotMlResult
+
+        top1, top2, top3, top4, top5 = (result["top_feats"] + [None] * 5)[:5]
 
         HoneypotMlResult.objects.update_or_create(
             token_info=token_info,
             defaults={
-                'is_honeypot': result['is_honeypot'],
-                'probability': result['probability'],
-                'risk_level': result['risk_level'],
-                'threshold': result['threshold'],
-                'top_contributing_features': result['top_contributing_features']
-            }
+                "is_honeypot": result["is_honeypot"],
+                "probability": result["probability"],
+                "risk_level": result["risk_level"],
+                "threshold": result["threshold"],
+                "top1_feat": top1,
+                "top2_feat": top2,
+                "top3_feat": top3,
+                "top4_feat": top4,
+                "top5_feat": top5,
+                "status": result["status"],
+            },
         )
 
 

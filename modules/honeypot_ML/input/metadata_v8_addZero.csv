@@ -1,2 +1,0 @@
-input_file,output_prefix,random_state,n_optuna_trials,n_samples_total,n_samples_train_full,n_samples_test,test_accuracy,test_precision,test_recall,test_f1,test_auc,test_fp,test_fn,test_errors,best_threshold_val,best_val_threshold_score,best_optuna_score
-features_honeypot_v8_addZero.csv,v8_addZero,42,100,4955,3964,991,0.9606458123107972,0.9600886917960089,0.9537444933920705,0.9569060773480663,0.9901024618741745,18,21,39,0.6399999999999997,0.43339622641509434,0.9173103766977851
