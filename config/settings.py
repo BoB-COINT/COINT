@@ -186,5 +186,6 @@ if DEBUG:
 # Blockchain API Settings
 ETHEREUM_RPC_URL = config('ETHEREUM_RPC_URL', default='')
 ETHERSCAN_API_KEY = config('ETHERSCAN_API_KEY', default='')
-ETHERSCAN_API_URL = config('ETHERSCAN_API_URL', default='https://api.etherscan.io/v2/api')
-MORALIS_API_KEY = config('MORALIS_API_KEY', default='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjczYTE1ZDY2LWU0ZmMtNGRmYS1iOWVjLTk3YzMxNjdiMjcwYiIsIm9yZ0lkIjoiNDcyNDU3IiwidXNlcklkIjoiNDg2MDIyIiwidHlwZUlkIjoiMjcxYzIxMTItODA1NS00ODZiLTkzYjUtMTEzZTZmZjcwMTU0IiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NTg4NTI3MzAsImV4cCI6NDkxNDYxMjczMH0.0SkUa_gKQuiHDQuv8AFrb_AhdYNCpAGtKun3nX2rSlQ')
+ETHERSCAN_API_URL = config('ETHERSCAN_API_URL', default='')
+MORALIS_API_KEY = config('MORALIS_API_KEY', default='')
+CHAINBASE_API_KEY = config('CHAINBASE_API_KEY', default='')
