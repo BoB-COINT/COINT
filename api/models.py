@@ -341,6 +341,23 @@ class HoneypotProcessedData(models.Model):
     hhi_per_holder = models.FloatField()
     whale_but_no_small_flag = models.IntegerField()
 
+    # Dynamic analyzer features (denormalized from HoneypotDaResult)
+    balance_manipulation = models.IntegerField(default=0)
+    buy_1 = models.IntegerField(default=0)
+    buy_2 = models.IntegerField(default=0)
+    buy_3 = models.IntegerField(default=0)
+    existing_holders_check = models.IntegerField(default=0)
+    exterior_call_check = models.IntegerField(default=0)
+    sell_fail_type_1 = models.IntegerField(default=0)
+    sell_fail_type_2 = models.IntegerField(default=0)
+    sell_fail_type_3 = models.IntegerField(default=0)
+    sell_result_1 = models.IntegerField(default=0)
+    sell_result_2 = models.IntegerField(default=0)
+    sell_result_3 = models.IntegerField(default=0)
+    tax_manipulation = models.IntegerField(default=0)
+    trading_suspend_check = models.IntegerField(default=0)
+    unlimited_mint = models.IntegerField(default=0)
+
     class Meta:
         db_table = 'honeypot_processed_data'
 
@@ -578,33 +595,78 @@ class HoneypotDaResult(models.Model):
 
 
 class HoneypotMlResult(models.Model):
-    """
-    Stores honeypot ML analysis results.
-    One record per token, created by honeypot_ML module.
-    """
     token_info = models.OneToOneField(
         TokenInfo,
         on_delete=models.CASCADE,
         related_name='honeypot_ml_result',
         primary_key=True,
-        db_column='token_addr_idx'
+        db_column='token_addr_idx',
     )
 
+    # y_pred (0/1) → is_honeypot
     is_honeypot = models.BooleanField(
-        help_text="Honeypot prediction result"
+        help_text="Honeypot prediction result (y_pred)"
     )
+
+    # y_proba → probability
     probability = models.FloatField(
-        help_text="Honeypot probability (0-1)"
+        help_text="Honeypot probability (y_proba, 0-1)"
     )
+
+    # (선택) risk_level / threshold 는 그대로 둬도 되고, 나중에 계산 안 쓰면 null 허용으로 바꿔도 됨
     risk_level = models.CharField(
         max_length=20,
-        help_text="Risk level: CRITICAL/HIGH/MEDIUM/LOW/VERY_LOW"
+        help_text="Risk level: CRITICAL/HIGH/MEDIUM/LOW/VERY_LOW",
+        null=True,
+        blank=True,
     )
     threshold = models.FloatField(
-        help_text="Decision threshold from model"
+        help_text="Decision threshold from model",
+        null=True,
+        blank=True,
     )
-    top_contributing_features = models.JSONField(
-        help_text="Top 5 contributing features with values and directions"
+
+    # 🔄 기존 JSONField 제거
+    # top_contributing_features = models.JSONField(
+    #     help_text="Top 5 contributing features with values and directions"
+    # )
+
+    # ✅ 새로 추가: top1_feat ~ top5_feat, status
+    top1_feat = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Most important feature name (rank 1)",
+    )
+    top2_feat = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Feature name (rank 2)",
+    )
+    top3_feat = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Feature name (rank 3)",
+    )
+    top4_feat = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Feature name (rank 4)",
+    )
+    top5_feat = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Feature name (rank 5)",
+    )
+
+    status = models.CharField(
+        max_length=20,
+        default="PRED_ONLY",
+        help_text="Result status (e.g., PRED_ONLY)",
     )
 
     created_at = models.DateTimeField(default=timezone.now)
@@ -614,7 +676,6 @@ class HoneypotMlResult(models.Model):
 
     def __str__(self):
         return f"Honeypot ML result for token {self.token_info.id} (prob: {self.probability:.4f})"
-
 
 class ExitMlResult(models.Model):
     """
