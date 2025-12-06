@@ -5,7 +5,7 @@ import time
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
-from pipeline.adapters import DataCollectorAdapter
+from pipeline.adapters import DataCollectorAdapter,HoneypotDynamicAnalyzerAdapter
 from api.models import TokenInfo, PairEvent, HolderInfo, ExitProcessedDataInstance, ExitProcessedDataStatic
 
 # 기존 데이터 삭제
@@ -20,6 +20,7 @@ print("   삭제 완료!")
 
 # 데이터 수집
 collector = DataCollectorAdapter()
+analyzer = HoneypotDynamicAnalyzerAdapter()
 token_addr = "0x8cF091eDAC829CdF4e89d8292C19e2cf7B6A45eE"
 
 print(f"\n🔍 수집 시작: {token_addr}")
@@ -43,3 +44,7 @@ print(f"   Token ID: {token_info.id}")
 print(f"   Pair Events: {token_info.pair_events.count()}")
 print(f"   Holders: {token_info.holders.count()}")
 print(f"   저장 시간: {save_time:.2f}초")
+
+token_info2= TokenInfo.objects.get(id=token_info.id)
+result_da = analyzer.analyze(token_info2)
+print(f"\n✅ 동적분석기 완료!")
