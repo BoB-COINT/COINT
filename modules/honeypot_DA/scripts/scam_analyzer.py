@@ -1170,6 +1170,12 @@ def main():
             print(f"Error: ALCHEMY_URL not set")
             
         try:
+
+            # run analyzer
+            print(f"\n{'#'*60}")
+            print(f"# 검사 시작: {token_address}")
+            print(f"{'#'*60}")
+
             # for step in range(len(blocknum_list)):
             if network.is_connected():
                 print('network already')
@@ -1179,11 +1185,24 @@ def main():
                 print("rpc already")
                 network.rpc.kill()
             
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                cmd = " ".join(proc.info['cmdline']).lower()
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                cmdline = proc.info.get("cmdline")
+
+                # cmdline이 None 이거나 비어 있으면 스킵
+                if not cmdline:
+                    continue
+
+                # cmdline이 문자열일 수도, 리스트일 수도 있으니 모두 처리
+                if isinstance(cmdline, str):
+                    cmd = cmdline.lower()
+                else:
+                    cmd = " ".join(cmdline).lower()
+
                 if "anvil" in cmd:
-                    print(f"💀 Killing old RPC process: {proc.pid}")
+                    # 👉 이모지 대신 평범한 텍스트 사용 (cp949 안전)
+                    print(f"[KILL] Killing old RPC process: {proc.pid}")
                     proc.kill()
+
 
             network.rpc.launch(
                 cmd=f"anvil --fork-url={fork_url} --fork-block-number={block_number} --accounts=10 --hardfork=cancun --no-storage-caching"
@@ -1225,17 +1244,21 @@ def main():
             )
             results = detector.run_tests()
 
+            # ✅ 결과 저장 (정상 실행된 경우에만)
+            filepath = detector.save_results()
+            print(f"[INFO] 상세 결과: {filepath}")
+            print(f"{'='*60}\n")
 
         except Exception as e:
+            import traceback
             print(f"\n{'='*60}")
-            print(f"❌ 토큰 #{token_idx} ({token_address}) 처리 중 오류 발생")
-            print(f"❌ 오류: {str(e)}")
+            print(f"[ERROR] 토큰 #{token_idx} ({token_address}) 처리 중 오류 발생")
+            print(f"[ERROR] {str(e)}")
+            traceback.print_exc()
             print(f"{'='*60}\n")
-        
-        # save results
-        filepath = detector.save_results()
-        print(f"📄 상세 결과: {filepath}")
-        print(f"{'='*60}\n")
+            # 🔥 실패를 어댑터까지 알려주기
+            sys.exit(1)
+
 
     finally:
         # 정상/예외 상관없이 항상 RPC 정리

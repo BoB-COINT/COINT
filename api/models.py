@@ -59,6 +59,11 @@ class TokenInfo(models.Model):
         null=True,
         help_text="Token name"
     )
+    holder_cnt = models.IntegerField(
+        blank=True,
+        null=True,
+        help_text="Total number of token holders"
+    )
 
     class Meta:
         db_table = 'token_info'
@@ -335,6 +340,23 @@ class HoneypotProcessedData(models.Model):
     concentrated_large_community_score = models.FloatField()
     hhi_per_holder = models.FloatField()
     whale_but_no_small_flag = models.IntegerField()
+
+    # Dynamic analyzer features (denormalized from HoneypotDaResult)
+    balance_manipulation = models.IntegerField(default=0)
+    buy_1 = models.IntegerField(default=0)
+    buy_2 = models.IntegerField(default=0)
+    buy_3 = models.IntegerField(default=0)
+    existing_holders_check = models.IntegerField(default=0)
+    exterior_call_check = models.IntegerField(default=0)
+    sell_fail_type_1 = models.IntegerField(default=0)
+    sell_fail_type_2 = models.IntegerField(default=0)
+    sell_fail_type_3 = models.IntegerField(default=0)
+    sell_result_1 = models.IntegerField(default=0)
+    sell_result_2 = models.IntegerField(default=0)
+    sell_result_3 = models.IntegerField(default=0)
+    tax_manipulation = models.IntegerField(default=0)
+    trading_suspend_check = models.IntegerField(default=0)
+    unlimited_mint = models.IntegerField(default=0)
 
     class Meta:
         db_table = 'honeypot_processed_data'

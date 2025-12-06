@@ -42,7 +42,7 @@ ERC20_ABI = [
 class UnifiedDataCollector:
     """Collects token information, pair events, and holders from Ethereum blockchain."""
 
-    def __init__(self, rpc_url: str, etherscan_api_key: str, etherscan_api_url: str, moralis_api_key: str):
+    def __init__(self, rpc_url: str, etherscan_api_key: str, etherscan_api_url: str, moralis_api_key: str, chainbase_api_key: str):
         """
         Initialize the collector.
 
@@ -56,6 +56,7 @@ class UnifiedDataCollector:
         self.etherscan_api_key = etherscan_api_key
         self.etherscan_api_url = etherscan_api_url
         self.moralis_api_key = moralis_api_key
+        self.chainbase_api_key = chainbase_api_key
 
         if not self.web3.is_connected():
             raise ConnectionError("Failed to connect to Ethereum node")
@@ -125,6 +126,7 @@ class UnifiedDataCollector:
         # Build token_info
         token_create_ts, token_creator = self._get_contract_creation_info(token_addr)
         symbol, name = self._get_token_metadata(token_addr)
+        holder_cnt = self._get_holder_count(token_addr)
 
         token_info = {
             'token_addr': token_addr,
@@ -136,7 +138,8 @@ class UnifiedDataCollector:
             'pair_type': pair_info['pair_type'],
             'token_creator_addr': token_creator,
             'symbol': symbol,
-            'name': name
+            'name': name,
+            'holder_cnt': holder_cnt
         }
 
         # Collect holders
@@ -206,9 +209,25 @@ class UnifiedDataCollector:
                             'token1': token1,
                             'token0_decimals': token0_decimals,
                             'token1_decimals': token1_decimals,
-                            'lp_total_supply': 0.0
+                            'lp_total_supply': 0
                         }
-
+                        evt_log = {
+                            'token0':token0,
+                            'token1':token1,
+                            'pairaddr':pair_addr
+                        }
+                        pair_created = {
+                            'timestamp': datetime.fromtimestamp(pair_created_ts, tz=timezone.utc),
+                            'block_number': pair_created_block,
+                            'tx_hash': tx_hash,
+                            'tx_from': tx_from,
+                            'tx_to': tx_to,
+                            'evt_idx': int(log['logIndex'],16),
+                            'evt_type': 'PairCreated',
+                            'evt_log': evt_log,
+                            'lp_total_supply': 0
+                        }
+                        events = [pair_created]
                         logger.info(f"Found pair {pair_addr} in {factory_name}")
 
                         # Extract initial events from creation transaction receipt
@@ -216,8 +235,8 @@ class UnifiedDataCollector:
                             tx_hash, pair_info
                         )
                         pair_info['lp_total_supply'] = lp_total_supply
-
-                        return pair_info, initial_events, init_seen
+                        total_evt = events + initial_events
+                        return pair_info, total_evt, init_seen
 
                 except Exception as e:
                     logger.error(f"Error searching factory {factory_name}: {e}")
@@ -234,7 +253,7 @@ class UnifiedDataCollector:
             receipt = self.web3.eth.get_transaction_receipt(tx_hash)
             events = []
             init_seen = set()
-            lp_total_supply = 0.0
+            lp_total_supply = 0
             reserve = [0.0, 0.0]
 
             for log in receipt['logs']:
@@ -274,7 +293,7 @@ class UnifiedDataCollector:
             logger.error(f"Error extracting initial events: {e}")
             return [], 0.0, set()
 
-    def _collect_pair_events(self, pair_addr: str, start_block: int, end_block, lp_total_supply: float, init_seen: Set[Tuple[str, int]]) -> List[Dict[str, Any]]:
+    def _collect_pair_events(self, pair_addr: str, start_block: int, end_block, lp_total_supply, init_seen: Set[Tuple[str, int]]) -> List[Dict[str, Any]]:
         """Collect pair events using Etherscan getLogs API, excluding init_seen."""
         logger.info(f"Collecting pair events for {pair_addr} from block {start_block} to {end_block}")
 
@@ -384,7 +403,7 @@ class UnifiedDataCollector:
         return event
 
     # Parsing functions for RPC receipt format
-    def _parse_mint_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_mint_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = bytes.hex(log['data'])
@@ -403,20 +422,21 @@ class UnifiedDataCollector:
 
         timestamp = datetime.fromtimestamp(int(log['blockTimestamp'], 16), tz=timezone.utc)
         tx_hash = '0x' + bytes.hex(log['transactionHash'])
+        tx_from, tx_to = self._get_tx_from_to(tx_hash)
 
         return {
             'timestamp': timestamp,
             'block_number': int(log['blockNumber']),
             'tx_hash': tx_hash,
-            'tx_from': '0x0',
-            'tx_to': '0x0',
+            'tx_from': tx_from,
+            'tx_to': tx_to,
             'evt_idx': int(log['logIndex']),
             'evt_type': 'Mint',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
-    def _parse_burn_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_burn_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = bytes.hex(log['data'])
@@ -437,28 +457,29 @@ class UnifiedDataCollector:
 
         timestamp = datetime.fromtimestamp(int(log['blockTimestamp'], 16), tz=timezone.utc)
         tx_hash = '0x' + bytes.hex(log['transactionHash'])
+        tx_from, tx_to = self._get_tx_from_to(tx_hash)
 
         return {
             'timestamp': timestamp,
             'block_number': int(log['blockNumber']),
             'tx_hash': tx_hash,
-            'tx_from': '0x0',
-            'tx_to': '0x0',
+            'tx_from': tx_from,
+            'tx_to': tx_to,
             'evt_idx': int(log['logIndex']),
             'evt_type': 'Burn',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
-    def _parse_swap_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_swap_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = bytes.hex(log['data'])
 
-        if len(topics) > 1:
-            evt_log['sender'] = '0x' + bytes.hex(topics[1])[-40:]
-        if len(topics) > 2:
-            evt_log['to'] = '0x' + bytes.hex(topics[2])[-40:]
+        # if len(topics) > 1:
+        #     evt_log['sender'] = '0x' + bytes.hex(topics[1])[-40:]
+        # if len(topics) > 2:
+        #     evt_log['to'] = '0x' + bytes.hex(topics[2])[-40:]
 
         token0_decimals = pair_info['token0_decimals']
         token1_decimals = pair_info['token1_decimals']
@@ -481,10 +502,10 @@ class UnifiedDataCollector:
             'evt_idx': int(log['logIndex']),
             'evt_type': 'Swap',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply':lp_total_supply
         }, lp_total_supply
 
-    def _parse_sync_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_sync_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         data_hex = bytes.hex(log['data'])
 
@@ -499,20 +520,21 @@ class UnifiedDataCollector:
 
         timestamp = datetime.fromtimestamp(int(log['blockTimestamp'], 16), tz=timezone.utc)
         tx_hash = '0x' + bytes.hex(log['transactionHash'])
+        tx_from, tx_to = self._get_tx_from_to(tx_hash)
 
         return {
             'timestamp': timestamp,
             'block_number': int(log['blockNumber']),
             'tx_hash': tx_hash,
-            'tx_from': '0x0',
-            'tx_to': '0x0',
+            'tx_from': tx_from,
+            'tx_to': tx_to,
             'evt_idx': int(log['logIndex']),
             'evt_type': 'Sync',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
-    def _parse_transfer_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_transfer_rpc(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = '0x' + bytes.hex(log['data'])
@@ -533,21 +555,22 @@ class UnifiedDataCollector:
 
         timestamp = datetime.fromtimestamp(int(log['blockTimestamp'], 16), tz=timezone.utc)
         tx_hash = '0x' + bytes.hex(log['transactionHash'])
+        tx_from, tx_to = self._get_tx_from_to(tx_hash)
 
         return {
             'timestamp': timestamp,
             'block_number': int(log['blockNumber']),
             'tx_hash': tx_hash,
-            'tx_from': '0x0',
-            'tx_to': '0x0',
+            'tx_from': tx_from,
+            'tx_to': tx_to,
             'evt_idx': int(log['logIndex']),
             'evt_type': 'Transfer',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
     # Parsing functions for getLogs API format
-    def _parse_mint_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_mint_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = log['data'][2:]
@@ -577,10 +600,10 @@ class UnifiedDataCollector:
             'evt_idx': int(log['logIndex'], 16) if log['logIndex'] != '0x' else 0,
             'evt_type': 'Mint',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
-    def _parse_burn_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_burn_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = log['data'][2:]
@@ -612,10 +635,10 @@ class UnifiedDataCollector:
             'evt_idx': int(log['logIndex'], 16) if log['logIndex'] != '0x' else 0,
             'evt_type': 'Burn',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
-    def _parse_swap_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_swap_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = log['data'][2:]
@@ -647,10 +670,10 @@ class UnifiedDataCollector:
             'evt_idx': int(log['logIndex'], 16) if log['logIndex'] != '0x' else 0,
             'evt_type': 'Swap',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
-    def _parse_sync_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_sync_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         data_hex = log['data'][2:]
 
@@ -676,15 +699,15 @@ class UnifiedDataCollector:
             'evt_idx': int(log['logIndex'], 16) if log['logIndex'] != '0x' else 0,
             'evt_type': 'Sync',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
-    def _parse_transfer_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply: float) -> Tuple[Dict[str, Any], float]:
+    def _parse_transfer_api(self, log: Dict, pair_info: Dict, reserve: List[float], lp_total_supply) -> Tuple[Dict[str, Any], float]:
         evt_log = {}
         topics = log['topics']
         data_hex = log['data']
 
-        value = int(data_hex, 16) / 1e18
+        value = int(data_hex, 16) / 10**18
 
         from_addr = '0x' + topics[1][-40:]
         to_addr = '0x' + topics[2][-40:]
@@ -711,7 +734,7 @@ class UnifiedDataCollector:
             'evt_idx': int(log['logIndex'], 16) if log['logIndex'] != '0x' else 0,
             'evt_type': 'Transfer',
             'evt_log': evt_log,
-            'lp_total_supply': str(int(lp_total_supply * 1e18))
+            'lp_total_supply': lp_total_supply
         }, lp_total_supply
 
     def _get_tx_from_to(self, tx_hash: str) -> tuple:
@@ -796,6 +819,41 @@ class UnifiedDataCollector:
         except Exception as e:
             logger.warning(f"Failed to get token metadata: {e}")
             return None, None
+
+    def _get_holder_count(self, token_addr: str) -> Optional[int]:
+        """Get total holder count using Chainbase API."""
+        logger.info(f"Fetching holder count for {token_addr}")
+
+        url = "https://api.chainbase.online/v1/token/holders"
+        params = {
+            "chain_id": 1,
+            "contract_address": token_addr,
+            "page": 1,
+            "limit": 1
+        }
+        headers = {
+            "X-API-Key": self.chainbase_api_key
+        }
+
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("code") == 0 and "count" in data:
+                holder_count = data["count"]
+                logger.info(f"Holder count: {holder_count}")
+                return holder_count
+            else:
+                logger.warning(f"Chainbase API error: {data.get('message', 'Unknown error')}")
+                print("error")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error fetching holder count from Chainbase: {e}")
+            print("error ex")
+
+            return None
 
     def _collect_holders(self, token_addr: str, max_holders: int = 20) -> List[Dict[str, Any]]:
         """Collect top token holders using Moralis API."""

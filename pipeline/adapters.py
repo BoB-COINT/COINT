@@ -28,6 +28,7 @@ class DataCollectorAdapter:
             - ETHERSCAN_API_KEY: Etherscan API key
             - ETHERSCAN_API_URL: Etherscan V2 API URL
             - MORALIS_API_KEY: Moralis API key
+            - CHAINBASE_API_KEY: Chainbase API key
         """
         from modules.data_collector import UnifiedDataCollector
         from django.conf import settings
@@ -36,7 +37,8 @@ class DataCollectorAdapter:
             rpc_url=settings.ETHEREUM_RPC_URL,
             etherscan_api_key=settings.ETHERSCAN_API_KEY,
             etherscan_api_url=settings.ETHERSCAN_API_URL,
-            moralis_api_key=settings.MORALIS_API_KEY
+            moralis_api_key=settings.MORALIS_API_KEY,
+            chainbase_api_key=settings.CHAINBASE_API_KEY
         )
 
     def collect_all(self, token_addr: str, days: int = 14) -> Dict[str, Any]:
@@ -107,7 +109,8 @@ class DataCollectorAdapter:
             pair_type=token_info_data['pair_type'],
             token_creator_addr=token_info_data['token_creator_addr'],
             symbol=token_info_data.get('symbol'),
-            name=token_info_data.get('name')
+            name=token_info_data.get('name'),
+            holder_cnt=token_info_data.get('holder_cnt')
         )
 
         # 2. Save PairEvents (bulk)
@@ -263,13 +266,16 @@ class HoneypotDynamicAnalyzerAdapter:
             cwd=str(self.module_path),
             capture_output=True,
             text=True,
-            timeout=600
+            encoding="utf-8",   # 🔹 명시적으로 UTF-8 사용
+            errors="ignore",    # 🔹 디코딩 안 되는 바이트는 버리기
+            timeout=600,
         )
 
         if result.returncode != 0:
             raise RuntimeError(f"honeypot_DA failed: {result.stderr}")
 
         return result.stdout
+
 
     def _parse_result_json(self, token_info: 'TokenInfo') -> Dict[str, Any]:
         """Parse result JSON file created by honeypot_DA."""
@@ -287,35 +293,113 @@ class HoneypotDynamicAnalyzerAdapter:
         """Save analysis result to HoneypotDaResult table."""
         from api.models import HoneypotDaResult
 
+        def to_bool(value):
+            """
+            value 형태:
+              - 0/1, True/False
+              - "0"/"1"/"true"/"false"
+              - {"result": 0/1, ...} 또는 {"flag": ...}
+            을 모두 Bool로 통일.
+            """
+            if isinstance(value, dict):
+                if "result" in value:
+                    value = value["result"]
+                elif "flag" in value:
+                    value = value["flag"]
+                elif "value" in value:
+                    value = value["value"]
+
+            # 숫자/문자 케이스 처리
+            if isinstance(value, (int, float, bool)):
+                return bool(value)
+            if isinstance(value, str):
+                s = value.strip().lower()
+                if s in ("1", "true", "yes", "y"):
+                    return True
+                if s in ("0", "false", "no", "n", ""):
+                    return False
+            return bool(value)
+
+        def to_int(value):
+            """
+            value 형태:
+              - 정수/실수
+              - "1", "2"
+              - {"code": 1}, {"value": 1}
+            을 모두 int로 통일.
+            """
+            if isinstance(value, dict):
+                for key in ("code", "value", "result"):
+                    if key in value:
+                        value = value[key]
+                        break
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
         HoneypotDaResult.objects.update_or_create(
             token_info=token_info,
             defaults={
-                'verified': result_data.get('verified', False),
-                "buy_1": result_data.get('buy_1'),
-                "buy_2": result_data.get('buy_2'),
-                "buy_3": result_data.get('buy_3'),
-                "sell_1": result_data.get('sell_1'),
-                "sell_2": result_data.get('sell_2'),
-                "sell_3": result_data.get('sell_3'),
-                "sell_fail_type_1": result_data.get('sell_fail_type_1'),
-                "sell_fail_type_2": result_data.get('sell_fail_type_2'),
-                "sell_fail_type_3": result_data.get('sell_fail_type_3'),                   
-                'trading_suspend_result': result_data.get('trading_suspend_check', {}).get('result', False),
-                'exterior_call_result': result_data.get('exterior_call_check', {}).get('result', False),
-                'unlimited_mint_result': result_data.get('unlimited_mint', {}).get('result', False),
-                'balance_manipulation_result': result_data.get('balance_manipulation', {}).get('result', False),
-                'tax_manipulation_result': result_data.get('tax_manipulation', {}).get('result', False),
-                'existing_holders_result': result_data.get('existing_holders_check', {}).get('result', False),
-            }
+                # 기본 verified
+                "verified": to_bool(result_data.get("verified", False)),
+
+                # buy 시나리오 (동적 CSV의 buy_1,2,3과 동일하게)
+                "buy_1": to_bool(result_data.get("buy_1")),
+                "buy_2": to_bool(result_data.get("buy_2")),
+                "buy_3": to_bool(result_data.get("buy_3")),
+
+                # sell 시나리오 (sell_result_1,2,3 → DB의 sell_1,2,3)
+                "sell_1": to_bool(
+                    result_data.get("sell_result_1", result_data.get("sell_1"))
+                ),
+                "sell_2": to_bool(
+                    result_data.get("sell_result_2", result_data.get("sell_2"))
+                ),
+                "sell_3": to_bool(
+                    result_data.get("sell_result_3", result_data.get("sell_3"))
+                ),
+
+                # sell 실패 타입
+                "sell_fail_type_1": to_int(result_data.get("sell_fail_type_1")),
+                "sell_fail_type_2": to_int(result_data.get("sell_fail_type_2")),
+                "sell_fail_type_3": to_int(result_data.get("sell_fail_type_3")),
+
+                # 나머지 체크 플래그들 (동적 CSV의 *_check, unlimited_mint 등과 동일)
+                "trading_suspend_result": to_bool(
+                    result_data.get("trading_suspend_check",
+                                    result_data.get("trading_suspend_result"))
+                ),
+                "exterior_call_result": to_bool(
+                    result_data.get("exterior_call_check",
+                                    result_data.get("exterior_call_result"))
+                ),
+                "unlimited_mint_result": to_bool(
+                    result_data.get("unlimited_mint",
+                                    result_data.get("unlimited_mint_result"))
+                ),
+                "balance_manipulation_result": to_bool(
+                    result_data.get("balance_manipulation",
+                                    result_data.get("balance_manipulation_result"))
+                ),
+                "tax_manipulation_result": to_bool(
+                    result_data.get("tax_manipulation",
+                                    result_data.get("tax_manipulation_result"))
+                ),
+                "existing_holders_result": to_bool(
+                    result_data.get("existing_holders_check",
+                                    result_data.get("existing_holders_result"))
+                ),
+            },
         )
 
-    def analyze(self, token_info: 'TokenInfo') -> Dict[str, Any]:
+    def analyze(self, token_info: 'TokenInfo', processed_data: 'HoneypotProcessedData' = None) -> Dict[str, Any]:
         """
         Run dynamic analysis for honeypot detection.
 
         Args:
             token_info: TokenInfo instance
-            processed_data: Not used (kept for interface compatibility)
+            processed_data: (optional) HoneypotProcessedData, not used for now
 
         Returns:
             Dictionary containing analysis results
@@ -331,7 +415,6 @@ class HoneypotDynamicAnalyzerAdapter:
 
         # Return result
         return result_data
-
 
 class HoneypotMLAnalyzerAdapter:
     """

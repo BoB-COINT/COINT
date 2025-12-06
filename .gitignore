@@ -58,3 +58,7 @@ credentials.json
 modules/honeypot_DA/.build/
 modules/honeypot_DA/build/
 modules/honeypot_DA/reports/
+
+venv/
+venv310/
+
