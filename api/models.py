@@ -59,6 +59,11 @@ class TokenInfo(models.Model):
         null=True,
         help_text="Token name"
     )
+    holder_cnt = models.IntegerField(
+        blank=True,
+        null=True,
+        help_text="Total number of token holders"
+    )
 
     class Meta:
         db_table = 'token_info'
