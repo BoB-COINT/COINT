@@ -1,41 +1,27 @@
-import os
-import sys
-import time
+"""
+Honeypot feature generation module (pure feature logic only).
+
+- compute_holder_features(holders_df)
+- process_token(token_addr, owner_addr, pair_evt_df, holders_df)
+- compute_honeypot_features(token_addr, owner_addr, pair_evt_records, holder_records)
+
+이 모듈은 Django/DB를 전혀 알지 못하고,
+순수하게 pair_evt + holders 기반 피처 계산만 담당한다.
+"""
+
+import ast
+from typing import Iterable, Mapping, Dict, Any
+
 import numpy as np
 import pandas as pd
 from scipy.stats import variation
-from pathlib import Path
-import ast
-
-# =========================================
-# 0. Django 설정 로딩 (프로젝트 루트 추가)
-# =========================================
-BASE_DIR = Path(__file__).resolve().parent.parent.parent  # .../COINT
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
-
-import django  # noqa: E402
-
-django.setup()
-
-from api.models import (  # noqa: E402
-    TokenInfo,
-    PairEvent,
-    HolderInfo,
-    HoneypotDaResult,
-    HoneypotProcessedData,
-)
-
-BASE = Path(".")
 
 
 # =========================================
 # 1. 홀더 피처 계산
 #    (비활성 토큰 구분용 홀더 기반 추가 피처 포함)
 # =========================================
-def compute_holder_features(holders_df):
+def compute_holder_features(holders_df: pd.DataFrame) -> Dict[str, Any]:
     """
     holders_df: 한 토큰에 대한 홀더 정보 DataFrame
         - rel_to_total: 각 홀더의 지분 비율(%) 컬럼 사용
@@ -149,12 +135,19 @@ def compute_holder_features(holders_df):
 # =========================================
 # 2. 한 토큰에 대한 pair_evt + holders 기반 피처 계산
 # =========================================
-def process_token(token_addr: str, owner_addr: str, pair_evt_df: pd.DataFrame, holders_df: pd.DataFrame):
+def process_token(
+    token_addr: str,
+    owner_addr: str,
+    pair_evt_df: pd.DataFrame,
+    holders_df: pd.DataFrame,
+) -> Dict[str, Any]:
     """
     token_addr: 토큰 주소 (string)
     owner_addr: 토큰 생성자 주소 (string, 없으면 "")
     pair_evt_df: 해당 토큰의 pair_evt DataFrame
+                 (timestamp, evt_type, tx_from, tx_to, evt_log ...)
     holders_df: 해당 토큰의 holder_info DataFrame
+                 (holder_addr, balance, rel_to_total ...)
     """
     if pair_evt_df is None:
         pair_evt_df = pd.DataFrame([])
@@ -295,133 +288,25 @@ def process_token(token_addr: str, owner_addr: str, pair_evt_df: pd.DataFrame, h
 
 
 # =========================================
-# 3. 메인 루프: DB → 피처 계산 → honeypot_processed_data 저장
+# 3. 어댑터 / 서비스에서 쓰기 좋은 래퍼
+#    (records → DataFrame → process_token)
 # =========================================
-def main():
-    start = time.time()
+def compute_honeypot_features(
+    token_addr: str,
+    owner_addr: str,
+    pair_evt_records: Iterable[Mapping[str, Any]],
+    holder_records: Iterable[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    # ✅ QuerySet truthiness 피하려고 None 만 체크
+    pair_evt_list = list(pair_evt_records) if pair_evt_records is not None else []
+    holder_list = list(holder_records) if holder_records is not None else []
 
-    token_qs = TokenInfo.objects.all().order_by("id")
-    total_tokens = token_qs.count()
-    da_count = HoneypotDaResult.objects.count()
-    pair_evt_count = PairEvent.objects.count()
-    holder_count = HolderInfo.objects.count()
+    pair_evt_df = pd.DataFrame.from_records(pair_evt_list)
+    holders_df = pd.DataFrame.from_records(holder_list)
 
-    print("=================================================")
-    print("🚀 Honeypot Feature Generator - Django DB version")
-    print("=================================================")
-    print(f"  TokenInfo           : {total_tokens:,}")
-    print(f"  PairEvent           : {pair_evt_count:,}")
-    print(f"  HolderInfo          : {holder_count:,}")
-    print(f"  HoneypotDaResult    : {da_count:,}")
-    print("  Output Model        : HoneypotProcessedData")
-    print("-------------------------------------------------")
-
-    for i, token in enumerate(token_qs.iterator(), start=1):
-        token_addr = token.token_addr
-        owner_addr = token.token_creator_addr or ""
-
-        # 1) pair_evt → DataFrame
-        evt_qs = PairEvent.objects.filter(token_info=token).values(
-            "timestamp", "evt_type", "tx_from", "tx_to", "evt_log"
-        )
-        pair_evt_df = pd.DataFrame.from_records(evt_qs)
-
-        # 2) holder_info → DataFrame
-        holder_qs = HolderInfo.objects.filter(token_info=token).values(
-            "holder_addr", "balance", "rel_to_total"
-        )
-        holders_df = pd.DataFrame.from_records(holder_qs)
-
-        # 3) 정적/홀더 피처 계산
-        row = process_token(
-            token_addr=token_addr,
-            owner_addr=owner_addr,
-            pair_evt_df=pair_evt_df,
-            holders_df=holders_df,
-        )
-
-        # 3-1) 🔹 동적 분석 결과(HoneypotDaResult)를 HoneypotProcessedData 컬럼으로 매핑
-        da = HoneypotDaResult.objects.filter(token_info=token).first()
-        dyn_defaults = {}
-        if da:
-            dyn_defaults = {
-                "balance_manipulation": int(bool(da.balance_manipulation_result)),
-                "buy_1": int(bool(da.buy_1)),
-                "buy_2": int(bool(da.buy_2)),
-                "buy_3": int(bool(da.buy_3)),
-                "existing_holders_check": int(bool(da.existing_holders_result)),
-                "exterior_call_check": int(bool(da.exterior_call_result)),
-                "sell_fail_type_1": int(da.sell_fail_type_1),
-                "sell_fail_type_2": int(da.sell_fail_type_2),
-                "sell_fail_type_3": int(da.sell_fail_type_3),
-                "sell_result_1": int(bool(da.sell_1)),
-                "sell_result_2": int(bool(da.sell_2)),
-                "sell_result_3": int(bool(da.sell_3)),
-                "tax_manipulation": int(bool(da.tax_manipulation_result)),
-                "trading_suspend_check": int(bool(da.trading_suspend_result)),
-                "unlimited_mint": int(bool(da.unlimited_mint_result)),
-            }
-
-        # 4) HoneypotProcessedData upsert (정적 + 동적 피처 모두 포함)
-        defaults = dict(
-            token_addr=row["token_addr"],
-            total_buy_cnt=row["total_buy_cnt"],
-            total_sell_cnt=row["total_sell_cnt"],
-            total_owner_sell_cnt=row["total_owner_sell_cnt"],
-            total_non_owner_sell_cnt=row["total_non_owner_sell_cnt"],
-            imbalance_rate=row["imbalance_rate"],
-            total_windows=row["total_windows"],
-            windows_with_activity=row["windows_with_activity"],
-            total_burn_events=row["total_burn_events"],
-            total_mint_events=row["total_mint_events"],
-            s_owner_count=row["s_owner_count"],
-            total_sell_vol=row["total_sell_vol"],
-            total_buy_vol=row["total_buy_vol"],
-            total_owner_sell_vol=row["total_owner_sell_vol"],
-            total_sell_vol_log=row["total_sell_vol_log"],
-            total_buy_vol_log=row["total_buy_vol_log"],
-            total_owner_sell_vol_log=row["total_owner_sell_vol_log"],
-            liquidity_event_mask=row["liquidity_event_mask"],
-            max_sell_share=row["max_sell_share"],
-            unique_sellers=row["unique_sellers"],
-            unique_buyers=row["unique_buyers"],
-            consecutive_sell_block_windows=row["consecutive_sell_block_windows"],
-            total_sell_block_windows=row["total_sell_block_windows"],
-            gini_coefficient=row["gini_coefficient"],
-            total_holders=row["total_holders"],
-            whale_count=row["whale_count"],
-            whale_total_pct=row["whale_total_pct"],
-            small_holders_pct=row["small_holders_pct"],
-            holder_balance_std=row["holder_balance_std"],
-            holder_balance_cv=row["holder_balance_cv"],
-            hhi_index=row["hhi_index"],
-            inactive_token_flag=row["inactive_token_flag"],
-            whale_domination_ratio=row["whale_domination_ratio"],
-            whale_presence_flag=row["whale_presence_flag"],
-            few_holders_flag=row["few_holders_flag"],
-            airdrop_like_flag=row["airdrop_like_flag"],
-            concentrated_large_community_score=row["concentrated_large_community_score"],
-            hhi_per_holder=row["hhi_per_holder"],
-            whale_but_no_small_flag=row["whale_but_no_small_flag"],
-        )
-
-        # 🔹 정적 + 동적 피처 합치기
-        defaults.update(dyn_defaults)
-
-        HoneypotProcessedData.objects.update_or_create(
-            token_info=token,
-            defaults=defaults,
-        )
-
-        if i % 50 == 0 or i == total_tokens:
-            elapsed = time.time() - start
-            speed = i / elapsed if elapsed > 0 else 0
-            print(f"  ✅ [{i}/{total_tokens}] done ({speed:.1f} tok/s)")
-
-    elapsed = time.time() - start
-    print("-------------------------------------------------")
-    print(f"🎉 Completed in {elapsed:.2f}s ({elapsed/60:.2f}m)")
-
-
-if __name__ == "__main__":
-    main()
+    return process_token(
+        token_addr=token_addr,
+        owner_addr=owner_addr,
+        pair_evt_df=pair_evt_df,
+        holders_df=holders_df,
+    )
