@@ -6,8 +6,20 @@ Honeypot Prediction - v12 (Module)
 - final_model_v12.json + metadata_v12.csv 기반 예측 모듈
 - 입력: HoneypotProcessedData 스키마와 호환되는 DataFrame (df_raw)
 - 출력: y_proba, y_pred, (옵션) top-k feature 이름이 포함된 DataFrame
+
+사용 예시 (다른 모듈에서):
+
+    from modules.honeypot_ML.predict_v12 import run_v12_inference
+
+    df_raw = ...  # HoneypotProcessedData 쿼리 → DataFrame 변환
+    df_pred = run_v12_inference(df_raw, compute_shap=False)
+
 """
+
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -15,54 +27,25 @@ import xgboost as xgb
 import shap
 
 # ======================================================================
-# Django 초기화
+# Config
 # ======================================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# 파일 상단 쪽에 추가
-_model = None
-_best_thr = None
-
-
-def load_model_and_threshold():
-    """모델과 best threshold를 한 번만 로드해서 캐시."""
-    global _model, _best_thr
-
-    if _model is not None and _best_thr is not None:
-        return _model, _best_thr
-
-    if not Config.META_PATH.exists():
-        raise FileNotFoundError(f"Metadata file not found: {Config.META_PATH}")
-
-    meta_row = pd.read_csv(Config.META_PATH).iloc[0]
-    best_thr = float(meta_row.get("best_threshold_val", 0.5))
-
-    if not Config.MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model file not found: {Config.MODEL_PATH}")
-
-    model = xgb.XGBClassifier()
-    model.load_model(Config.MODEL_PATH)
-
-    _model = model
-    _best_thr = best_thr
-    return model, best_thr
-
-# ======================================================================
-# Config
-# ======================================================================
 
 class Config:
+    """기본 경로/설정(필요하면 run_v12_inference에서 override 가능)."""
+
     # 🔹 모델/메타데이터 파일 경로 (input 폴더)
     MODEL_DIR = BASE_DIR / "input"
     MODEL_PATH = MODEL_DIR / "final_model_v12.json"
     META_PATH = MODEL_DIR / "metadata_v12.csv"
 
-    # 🔹 결과 CSV 저장 경로 (원래 로직 유지)
+    # 🔹 결과 CSV 저장 경로 (원래 로직 유지할 때만 사용 가능)
     OUTPUT_DIR = BASE_DIR / "output"
     PREDICTION_OUTPUT = OUTPUT_DIR / "predictions_inference_v12.csv"
 
-    # 🔹 Dynamic feature 목록 (기존 그대로)
+    # 🔹 Dynamic feature 목록
     DYNAMIC_FEATURES = [
         "balance_manipulation",
         "blacklist_check",
@@ -74,9 +57,58 @@ class Config:
         "unlimited_mint",
     ]
 
+
 # ======================================================================
-# 피처 엔지니어링 (기존 로직 그대로)
+# 전역 캐시: 모델 + threshold
 # ======================================================================
+
+_model: Optional[xgb.XGBClassifier] = None
+_best_thr: Optional[float] = None
+
+
+def load_model_and_threshold(
+    model_path: Optional[Path] = None,
+    meta_path: Optional[Path] = None,
+) -> Tuple[xgb.XGBClassifier, float]:
+    """
+    모델과 best threshold를 한 번만 로드해서 캐시.
+
+    Parameters
+    ----------
+    model_path : Optional[Path]
+        기본값(None)이면 Config.MODEL_PATH 사용.
+    meta_path : Optional[Path]
+        기본값(None)이면 Config.META_PATH 사용.
+    """
+    global _model, _best_thr
+
+    if _model is not None and _best_thr is not None:
+        return _model, _best_thr
+
+    meta_path = meta_path or Config.META_PATH
+    model_path = model_path or Config.MODEL_PATH
+
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Metadata file not found: {meta_path}")
+
+    meta_row = pd.read_csv(meta_path).iloc[0]
+    best_thr = float(meta_row.get("best_threshold_val", 0.5))
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    model = xgb.XGBClassifier()
+    model.load_model(model_path)
+
+    _model = model
+    _best_thr = best_thr
+    return model, best_thr
+
+
+# ======================================================================
+# 피처 엔지니어링
+# ======================================================================
+
 
 def create_enhanced_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -191,6 +223,7 @@ def create_enhanced_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # -------------------- Dynamic Analyzer 통합 --------------------
     dynamic_cols = [c for c in Config.DYNAMIC_FEATURES if c in df.columns]
+
     if dynamic_cols:
         df["dynamic_risk_count"] = df[dynamic_cols].sum(axis=1)
         df["has_any_dynamic_risk"] = (df["dynamic_risk_count"] > 0).astype(int)
@@ -282,7 +315,7 @@ def create_enhanced_features(df: pd.DataFrame) -> pd.DataFrame:
         + df["high_holders_active_trading"] * 0.05
     )
 
-    dynamic_risk = 0
+    dynamic_risk = 0.0
     if "dynamic_risk_count" in df.columns:
         max_risk = len(dynamic_cols) if dynamic_cols else 1
         dynamic_risk = df["dynamic_risk_count"] / max_risk
@@ -292,7 +325,7 @@ def create_enhanced_features(df: pd.DataFrame) -> pd.DataFrame:
     if "verified" in df.columns:
         df["verified_reliability_boost"] = df["verified"] * 0.2
         df["verified_but_risky"] = (
-            df["verified"] * df["has_any_dynamic_risk"]
+            df["verified"] * df.get("has_any_dynamic_risk", 0)
         ).astype(int)
 
     return df
@@ -301,6 +334,7 @@ def create_enhanced_features(df: pd.DataFrame) -> pd.DataFrame:
 # ======================================================================
 # 전처리: inf / NaN / 이상값 처리
 # ======================================================================
+
 
 def clean_features(X: pd.DataFrame) -> pd.DataFrame:
     X = X.copy()
@@ -318,7 +352,7 @@ def clean_features(X: pd.DataFrame) -> pd.DataFrame:
     return X
 
 
-def classify_status(y_true, y_pred):
+def classify_status(y_true, y_pred) -> str:
     if y_true == 1 and y_pred == 1:
         return "TP"
     if y_true == 0 and y_pred == 1:
@@ -329,19 +363,47 @@ def classify_status(y_true, y_pred):
         return "TN"
     return "UNKNOWN"
 
-def run_v12_inference(df_raw: pd.DataFrame, compute_shap: bool = True) -> pd.DataFrame:
+
+# ======================================================================
+# 외부에서 호출하는 메인 함수 (모듈형)
+# ======================================================================
+
+
+def run_v12_inference(
+    df_raw: pd.DataFrame,
+    compute_shap: bool = True,
+    model_path: Optional[Path] = None,
+    meta_path: Optional[Path] = None,
+) -> pd.DataFrame:
     """
     HoneypotProcessedData 형태의 raw DataFrame을 받아
-    v12 모델로 예측 + top-5 feature 이름까지 계산해서 df_out 반환.
+    v12 모델로 예측 + (옵션) top-5 feature 이름까지 계산해서 df_out 반환.
 
-    df_out 컬럼:
-      - token_addr_idx (있으면)
-      - token_addr (있으면)
-      - y_proba, y_pred
-      - (옵션) top1_feat ~ top5_feat
-      - (옵션) y_true, status
+    Parameters
+    ----------
+    df_raw : pd.DataFrame
+        HoneypotProcessedData 스키마와 호환되는 입력 DataFrame.
+    compute_shap : bool, default True
+        True일 경우, 샘플별 top1~top5 feature 이름을 계산.
+    model_path : Optional[Path]
+        v12 모델 JSON 경로 override (기본값: Config.MODEL_PATH).
+    meta_path : Optional[Path]
+        메타데이터 CSV 경로 override (기본값: Config.META_PATH).
+
+    Returns
+    -------
+    pd.DataFrame
+        컬럼 예:
+          - token_addr_idx (있으면)
+          - token_addr (있으면)
+          - y_proba, y_pred
+          - (옵션) top1_feat ~ top5_feat
+          - (옵션) y_true, status
     """
-    model, best_thr = load_model_and_threshold()
+    model, best_thr = load_model_and_threshold(
+        model_path=model_path,
+        meta_path=meta_path,
+    )
 
     if df_raw.empty:
         raise ValueError("df_raw is empty")
@@ -366,6 +428,7 @@ def run_v12_inference(df_raw: pd.DataFrame, compute_shap: bool = True) -> pd.Dat
     cols_to_drop_for_X = [c for c in drop_cols if c in df_raw.columns]
     X_base = df_raw.drop(columns=cols_to_drop_for_X)
 
+    # 숫자형 변환
     X_base = X_base.apply(pd.to_numeric, errors="coerce")
 
     # 피처 엔지니어링 + 정제
