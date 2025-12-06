@@ -27,10 +27,7 @@ def run_scenario(detector):
     quote_symbol, quote_decimals = identify_quote(detector, quote_addr)
     token_decimals = detector.results.get("token_info", {}).get("decimals", 18)
 
-    pair = Contract.from_abi("IUniswapV2Pair", detector.pair_address, detector.pair_abi)
-    reserves = pair.getReserves()
-    token0 = pair.token0().lower()
-    token_reserve_raw = reserves[0] if token0 == detector.token_address.lower() else reserves[1]
+    token_reserve_raw = get_token_reserve(detector)
     token_reserve_dec = Decimal(token_reserve_raw) / (Decimal(10) ** token_decimals)
 
     # Prepare all test accounts upfront (ETH -> WETH -> Quote conversion once per account)
@@ -77,16 +74,33 @@ def prepare_account_quote(detector, account, quote_addr, quote_symbol,block_gas_
         print(f"  quote balance: {from_wei(quote_balance):.6f} WETH")
         return quote_token, quote_balance
 
-    detector.weth.approve(detector.router_addr, eth_amount_wei, {"from": account,'gas_limit':block_gas_limit})
     print(f"  swap WETH -> {quote_symbol}")
-    detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-        eth_amount_wei,
-        0,
-        [detector.weth.address, detector.quote_token_address],
-        account.address,
-        deadline,
-        {"from": account,"gas_limit": block_gas_limit}
-    )
+
+    if detector.dex_version == "v3":
+        detector.weth.approve(detector.v3_router_addr, eth_amount_wei, {"from": account,'gas_limit':block_gas_limit})
+
+        params = (
+            detector.weth.address,
+            detector.quote_token_address,
+            3000,
+            account.address,
+            deadline,
+            eth_amount_wei,
+            0,
+            0
+        )
+
+        detector.v3_router.exactInputSingle(params, {"from": account,"gas_limit": block_gas_limit})
+    else:
+        detector.weth.approve(detector.router_addr, eth_amount_wei, {"from": account,'gas_limit':block_gas_limit})
+        detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            eth_amount_wei,
+            0,
+            [detector.weth.address, detector.quote_token_address],
+            account.address,
+            deadline,
+            {"from": account,"gas_limit": block_gas_limit}
+        )
 
     quote_token = detector.quote_token
     quote_balance = quote_token.balanceOf(account.address)
@@ -117,21 +131,52 @@ def test_buy_sell(
     token_target_raw = int(target_tokens_dec * (Decimal(10) ** token_decimals))
 
     try:
-        quote_needed_raw = detector.router.getAmountsIn(token_target_raw, path_quote_to_token)[0]
+        if detector.dex_version == "v3":
+            quote_result = detector.v3_quoter.quoteExactOutputSingle(
+                quote_addr,
+                detector.token_address,
+                token_target_raw,
+                detector.fee_tier,
+                0
+            )
+            quote_needed_raw = quote_result[0]
+        else:
+            quote_needed_raw = detector.router.getAmountsIn(token_target_raw, path_quote_to_token)[0]
     except Exception:
-        print("⚠️  Failed to determine required quote amount via getAmountsIn. Skipping test.")
-        return {
-            "test_name": label,
-            "quote_symbol": quote_symbol,
-            "quote_spent": 0.0,
-            "quote_received": 0.0,
-            "tokens_target": float(target_tokens_dec),
-            "tokens_received": 0.0,
-            "recovery_rate": None,
-            "buy_success": False,
-            "sell_success": False,
-            "messages": ["getAmountsIn failed"],
-        }
+        # Fallback: estimate from recorded reserves (prevents hard stop)
+        liq_info = detector.results.get("liquidity_info", {})
+        quote_reserve_raw = liq_info.get("quote_reserve") or 0
+        token_reserve_raw = liq_info.get("token_reserve") or 0
+        if quote_reserve_raw > 0 and token_reserve_raw > 0:
+            # simple proportion with 20% buffer
+            quote_needed_raw = int(token_target_raw * quote_reserve_raw / token_reserve_raw * 1.2)
+            print("⚠️  Quoter failed; using reserve-based estimate.")
+        else:
+            print("⚠️  Failed to determine required quote amount. Skipping test.")
+            return {
+                "test_name": label,
+                "quote_symbol": quote_symbol,
+                "quote_spent": 0.0,
+                "quote_received": 0.0,
+                "tokens_target": float(target_tokens_dec),
+                "tokens_received": 0.0,
+                "recovery_rate": None,
+                "buy_success": False,
+                "sell_success": False,
+                "sell_fail":2,
+                "messages": ["Quote calculation failed"],
+            }
+
+    # If required quote exceeds available balance, scale token target down to fit balance
+    if quote_needed_raw > quote_balance_raw and quote_balance_raw > 0:
+        scale = Decimal(quote_balance_raw) / Decimal(quote_needed_raw)
+        token_target_raw = max(1, int(token_target_raw * float(scale) * 0.98))  # 2% buffer
+        target_tokens_dec = Decimal(token_target_raw) / (Decimal(10) ** token_decimals)
+        quote_needed_raw = quote_balance_raw
+        print(
+            f"⚠️  Target reduced to fit balance: {target_tokens_dec:.6f} tokens using "
+            f"{Decimal(quote_needed_raw) / (Decimal(10) ** quote_decimals):.6f} {quote_symbol}"
+        )
 
     quote_needed_raw = min(quote_needed_raw, quote_balance_raw)
     quote_needed_dec = Decimal(quote_needed_raw) / (Decimal(10) ** quote_decimals)
@@ -142,20 +187,38 @@ def test_buy_sell(
     print("[1/2] Buy token")
 
     # Try to buy tokens - catch revert
+    sell_fail = 0
     buy_success = False
     token_balance = 0
     token_balance_dec = Decimal(0)
 
     try:
-        quote_token.approve(detector.router_addr, quote_needed_raw, {"from": test_account, 'gas_limit':block_gas_limit})
-        tx = detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                quote_needed_raw,
-                0,
-                path_quote_to_token,
+        if detector.dex_version == "v3":
+            quote_token.approve(detector.v3_router_addr, quote_needed_raw, {"from": test_account, 'gas_limit':block_gas_limit})
+
+            params = (
+                quote_addr,
+                detector.token_address,
+                detector.fee_tier,
                 test_account.address,
                 deadline,
-                {"from": test_account ,'gas_limit':block_gas_limit}
+                quote_needed_raw,
+                0,
+                0
             )
+
+            tx = detector.v3_router.exactInputSingle(params, {"from": test_account, 'gas_limit':block_gas_limit})
+        else:
+            quote_token.approve(detector.router_addr, quote_needed_raw, {"from": test_account, 'gas_limit':block_gas_limit})
+            tx = detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                    quote_needed_raw,
+                    0,
+                    path_quote_to_token,
+                    test_account.address,
+                    deadline,
+                    {"from": test_account ,'gas_limit':block_gas_limit}
+                )
+
         network.web3.provider.make_request("anvil_mine", [1])
         tx.wait(1)
 
@@ -166,8 +229,8 @@ def test_buy_sell(
 
     except (VirtualMachineError, ValueError, Exception) as e:
         error_msg = str(e) if str(e) else "Transaction reverted"
+        sell_fail = 1
         print(f"  ❌ buy failed | reason: {error_msg}")
-        # Return early if buy fails
         return {
             "test_name": label,
             "quote_symbol": quote_symbol,
@@ -178,6 +241,7 @@ def test_buy_sell(
             "recovery_rate": None,
             "buy_success": False,
             "sell_success": False,
+            "sell_fail":sell_fail,
             "messages": [f"Buy transaction failed: {error_msg}"],
         }
 
@@ -198,27 +262,50 @@ def test_buy_sell(
     recovery_ratio = None
 
     try:
-        # Approve token spending for sell
-        detector.token.approve(detector.router_addr, token_balance, {"from": test_account, 'gas_limit':block_gas_limit})
+        if detector.dex_version == "v3":
+            detector.token.approve(detector.v3_router_addr, token_balance, {"from": test_account, 'gas_limit':block_gas_limit})
 
-        # Execute sell swap
-        tx = detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            token_balance,
-            0,
-            sell_path,
-            test_account.address,
-            deadline,
-            {"from": test_account, 'gas_limit':block_gas_limit}
-        )
+            params = (
+                detector.token_address,
+                quote_addr,
+                detector.fee_tier,
+                test_account.address,
+                deadline,
+                token_balance,
+                0,
+                0
+            )
+
+            tx = detector.v3_router.exactInputSingle(params, {"from": test_account, 'gas_limit':block_gas_limit})
+        else:
+            detector.token.approve(detector.router_addr, token_balance, {"from": test_account, 'gas_limit':block_gas_limit})
+
+            tx = detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                token_balance,
+                0,
+                sell_path,
+                test_account.address,
+                deadline,
+                {"from": test_account, 'gas_limit':block_gas_limit}
+            )
+
         network.web3.provider.make_request("anvil_mine", [1])
         tx.wait(1)
 
         quote_balance_after_sell = quote_token.balanceOf(test_account.address)
         quote_received_raw = quote_balance_after_sell - quote_balance_before_sell
         quote_received_dec = Decimal(quote_received_raw) / (Decimal(10) ** quote_decimals)
+        sell_tax = (1 - quote_received_raw/quote_needed_raw) * 100
+        print(f"sell tax:{sell_tax}")
 
-        if  quote_received_dec <= 0.000009:
+        if (quote_received_dec) <= 0.000009:
             sell_success = False
+            sell_fail = 2           
+            print(f"❌ sell failed | received: {quote_received_dec}")
+
+        if  sell_tax >= 50:
+            sell_success = False
+            sell_fail = 3
             print(f"  ❌ sell failed | {quote_symbol} received: {quote_received_dec:.6f}")
         else:
             print(f"  ✅ sell complete | {quote_symbol} received: {quote_received_dec:.6f}")
@@ -231,6 +318,7 @@ def test_buy_sell(
 
     except (VirtualMachineError, ValueError, Exception) as e:
         sell_success = False
+        sell_fail = 4
         quote_received_dec = Decimal(0)
         recovery_ratio = None
         error_msg = str(e) if str(e) else "Transaction reverted"
@@ -248,6 +336,7 @@ def test_buy_sell(
         "recovery_rate": float(recovery_ratio) if recovery_ratio is not None else None,
         "buy_success": buy_success,
         "sell_success": sell_success,
+        "sell_fail": sell_fail,
         "messages": [
             f"quote_spent={quote_needed_dec:.6f} {quote_symbol}",
             f"quote_received={quote_received_dec:.6f} {quote_symbol}",
@@ -290,4 +379,25 @@ def to_wei(amount_eth: Decimal) -> int:
 
 def from_wei(amount_wei: int) -> Decimal:
     return Decimal(amount_wei) / (Decimal(10) ** 18)
+
+
+def get_token_reserve(detector):
+    """
+    Get token reserve from pool (V2 or V3 compatible)
+    For V3, use actual pool token balance (more reliable than liquidity estimate)
+    """
+    if detector.dex_version == "v2":
+        pair = Contract.from_abi("IUniswapV2Pair", detector.pair_address, detector.pair_abi)
+        reserves = pair.getReserves()
+        token0 = pair.token0().lower()
+        token_reserve = reserves[0] if token0 == detector.token_address.lower() else reserves[1]
+        return token_reserve
+    elif detector.dex_version == "v3":
+        try:
+            token_reserve = detector.token.balanceOf(detector.pair_address)
+            return token_reserve
+        except Exception:
+            return 0
+    else:
+        return 0
 

@@ -59,11 +59,6 @@ class TokenInfo(models.Model):
         null=True,
         help_text="Token name"
     )
-    holder_cnt = models.IntegerField(
-        blank=True,
-        null=True,
-        help_text="Total number of token holders"
-    )
 
     class Meta:
         db_table = 'token_info'
@@ -538,44 +533,35 @@ class HoneypotDaResult(models.Model):
     verified = models.BooleanField(
         help_text="Contract verified on Etherscan"
     )
+    buy_1 = models.BooleanField()
+    buy_2 = models.BooleanField()
+    buy_3 = models.BooleanField()
 
-    # Buy/Sell test
-    buy_sell_result = models.BooleanField(
-        help_text="Buy and sell both successful"
-    )
-    buy_sell_return_rate = models.FloatField(
-        null=True,
-        blank=True,
-        help_text="Return rate percentage (0-100)"
-    )
+    sell_1 = models.BooleanField()
+    sell_2 = models.BooleanField()
+    sell_3 = models.BooleanField()
 
-    # Blacklist check
-    blacklist_result = models.BooleanField()
-    blacklist_confidence = models.CharField(max_length=10)
+    sell_fail_type_1 = models.IntegerField()
+    sell_fail_type_2 = models.IntegerField()
+    sell_fail_type_3 = models.IntegerField()
 
     # Trading suspend check
     trading_suspend_result = models.BooleanField()
-    trading_suspend_confidence = models.CharField(max_length=10)
 
     # Exterior call check
     exterior_call_result = models.BooleanField()
-    exterior_call_confidence = models.CharField(max_length=10)
 
     # Unlimited mint
     unlimited_mint_result = models.BooleanField()
-    unlimited_mint_confidence = models.CharField(max_length=10)
 
     # Balance manipulation
     balance_manipulation_result = models.BooleanField()
-    balance_manipulation_confidence = models.CharField(max_length=10)
 
     # Tax manipulation
     tax_manipulation_result = models.BooleanField()
-    tax_manipulation_confidence = models.CharField(max_length=10)
 
     # Existing holders check
     existing_holders_result = models.BooleanField()
-    existing_holders_confidence = models.CharField(max_length=10)
 
     created_at = models.DateTimeField(default=timezone.now)
 

@@ -78,6 +78,7 @@ KEYWORD_HINTS = [
 
 GENERIC_EXCLUDE_FUNCTIONS = {
     "deprecate",
+    "turnoff"
 }
 
 ALLOWED_SIMPLE_TYPES = {"address", "bool"}
@@ -303,7 +304,6 @@ def _attempt_manipulation(func, target_addr, amount, from_account, owner_addr):
         try:
             tx = func(*args, {"from": from_account, **DEFAULT_GAS_SETTINGS})
             if tx.status == 1:
-                chain.revert()
                 # Success - keep the snapshot active so caller can check balances
                 return True, {"tx": tx, "args": args}, args
         except Exception as exc:
@@ -649,12 +649,32 @@ def run_scenario(detector):
     decimals = _resolve_decimals(detector)
     try:
         from brownie import Contract
-        pair_contract = Contract.from_abi("IUniswapV2Pair", detector.pair_address, detector.pair_abi)
-        reserves = pair_contract.getReserves()
-        token0 = pair_contract.token0().lower()
-        token_address = detector.token_address.lower()
-        token_reserve = reserves[0] if token0 == token_address else reserves[1]
-        quote_reserve = reserves[1] if token0 == token_address else reserves[0]
+
+        if detector.dex_version == "v2":
+            pair_contract = Contract.from_abi("IUniswapV2Pair", detector.pair_address, detector.pair_abi)
+            reserves = pair_contract.getReserves()
+            token0 = pair_contract.token0().lower()
+            token_address = detector.token_address.lower()
+            token_reserve = reserves[0] if token0 == token_address else reserves[1]
+            quote_reserve = reserves[1] if token0 == token_address else reserves[0]
+        elif detector.dex_version == "v3":
+            pool = Contract.from_abi("IUniswapV3Pool", detector.pair_address, detector.v3_pool_abi)
+            liquidity = pool.liquidity()
+            slot0 = pool.slot0()
+            sqrt_price_x96 = slot0[0]
+            token0 = pool.token0().lower()
+            is_token0 = token0 == detector.token_address.lower()
+
+            if sqrt_price_x96 > 0:
+                if is_token0:
+                    token_reserve = int(liquidity / (sqrt_price_x96 / (2 ** 96)))
+                    quote_reserve = int(liquidity * (sqrt_price_x96 / (2 ** 96)))
+                else:
+                    token_reserve = int(liquidity * (sqrt_price_x96 / (2 ** 96)))
+                    quote_reserve = int(liquidity / (sqrt_price_x96 / (2 ** 96)))
+            else:
+                token_reserve = 0
+                quote_reserve = 0
 
         target_tokens = int(token_reserve * 0.005)  # 0.5% of reserve
 

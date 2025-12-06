@@ -4,57 +4,57 @@ Trading Suspend Detection Scenario
 컨트랙트의 거래 중단(Trade Blocking) 기능 동적 탐지
 """
 
+from decimal import Decimal
+
 from brownie import accounts, chain, Contract, network
-# 공통 상수
+from scripts import utils
+
+# Constants
 GAS_PRICE = "100 gwei"
-BUY_AMOUNT = int(0.1 * 1e18)
-ETH_TRANSFER_AMOUNT = int(1.0 * 1e18)
 SELL_RATIO = 0.5
 GAS_LIMIT = ""
-def prepare_account_with_quote(detector, account, eth_amount_for_quote):
-    """계정에 Quote Token 준비 (basic_swap_test 방식)
+SUSPEND_TARGET_RATIO = Decimal("0.02")  # 2% of pool reserve
 
-    Args:
-        eth_amount_for_quote: Quote token 확보를 위해 사용할 ETH 양 (wei)
-    """
-    quote_addr = detector.quote_token_address or detector.weth.address
 
-    # 1. ETH 잔고 확보 (가스비 포함)
-    total_eth_needed = eth_amount_for_quote + int(5.0 * 1e18)  # 5 ETH 가스비 여유 (높은 gas_limit 대비)
-    if account.balance() < total_eth_needed:
-        accounts[0].transfer(account, total_eth_needed - account.balance(), gas_price=GAS_PRICE)
-        network.web3.provider.make_request("anvil_mine", [1])
+def ensure_eth_balance(account, min_wei=int(5e18)):
+    """Fund account with ETH if balance is below the minimum."""
+    try:
+        current = account.balance()
+        if current < min_wei:
+            accounts[0].transfer(account, min_wei - current)
+    except Exception:
+        pass
 
-    # 2. WETH deposit
-    detector.weth.deposit({"from": account, "value": eth_amount_for_quote, "gas_price": GAS_PRICE, "gas_limit":GAS_LIMIT})
-    network.web3.provider.make_request("anvil_mine", [1])
 
-    # 3. WETH인 경우 완료
-    if quote_addr.lower() == detector.weth.address.lower():
-        return detector.weth, quote_addr
+def get_token_reserve(detector):
+    """Get token reserve from pool (V2 or V3 compatible)."""
+    if getattr(detector, "dex_version", None) == "v2":
+        try:
+            pair = Contract.from_abi("IUniswapV2Pair", detector.pair_address, detector.pair_abi)
+            reserves = pair.getReserves()
+            token0 = pair.token0().lower()
+            return reserves[0] if token0 == detector.token_address.lower() else reserves[1]
+        except Exception:
+            return 0
+    if getattr(detector, "dex_version", None) == "v3":
+        try:
+            return detector.token.balanceOf(detector.pair_address)
+        except Exception:
+            return 0
+    return 0
 
-    # 4. WETH가 아닌 경우: WETH 전체를 Quote Token으로 swap
-    deadline = chain.time() + 300
-    weth_balance = detector.weth.balanceOf(account.address)
 
-    detector.weth.approve(detector.router_addr, weth_balance, {"from": account, "gas_price": GAS_PRICE, "gas_limit":GAS_LIMIT})
-    network.web3.provider.make_request("anvil_mine", [1])
+def determine_target_tokens(detector, ratio=SUSPEND_TARGET_RATIO):
+    """Select a small target amount based on pool reserves to avoid oversizing swaps."""
+    try:
+        token_reserve_raw = get_token_reserve(detector)
+        if token_reserve_raw and token_reserve_raw > 0:
+            return max(1, int(Decimal(token_reserve_raw) * ratio))
+    except Exception:
+        pass
+    token_decimals = detector.results.get("token_info", {}).get("decimals", 18)
+    return max(1, 10 ** max(0, token_decimals - 6))
 
-    detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-        weth_balance,
-        0,
-        [detector.weth.address, detector.quote_token_address],
-        account.address,
-        deadline,
-        {"from": account, "gas_price": GAS_PRICE, "gas_limit":GAS_LIMIT}
-    )
-    network.web3.provider.make_request("anvil_mine", [1])
-
-    return detector.quote_token, detector.quote_token_address
-
-def get_abi_from_etherscan(token_address):
-    """Deprecated stub kept for backward compatibility."""
-    return None
 
 def has_function_in_abi(abi, function_name):
     """ABI에 특정 함수가 존재하는지 확인"""
@@ -67,7 +67,7 @@ def find_suspension_functions(abi):
     suspension_functions = {
         "pause": [
             "pause", "setPaused", "pauseTrading", "pauseContract",
-            "pauseToken", "setPause", "setContractPaused"," "
+            "pauseToken", "setPause", "setContractPaused","setTokenPaused"
         ],
         "unpause": [
             "unpause", "resumeTrading", "unpauseTrading", "unpauseContract",
@@ -128,53 +128,59 @@ def run_scenario(detector):
         print("Trading Suspend Detection Scenario")
         print(f"{'='*60}")
 
-        # Phase 1: Owner 확인
-        print("\n[Phase 1] Owner 확인")
-        # owner_address = detector.token_owner or detector.find_owner()
-        print(detector.owner_candidate)
-        for owner in detector.owner_candidate:
-            if owner is not None:
-                owner_address = owner
-                break
-            else:
+        # Phase 1: Owner check
+        print("\n[Phase 1] Owner check")
+        owner_address = detector.token_owner or getattr(detector, "find_owner", lambda: None)()
+        raw_candidates = []
+        if getattr(detector, "owner_candidate", None):
+            raw_candidates.extend([c for c in detector.owner_candidate if c])
+        if owner_address:
+            raw_candidates.append(owner_address)
+
+        renounced_seen = False
+        privileged_accounts = []
+        seen_accounts = set()
+
+        for cand in raw_candidates:
+            if not cand:
                 continue
-        
+            cand_lower = cand.lower()
+            if cand_lower in {
+                "0x0000000000000000000000000000000000000000",
+                "0x000000000000000000000000000000000000dead",
+            }:
+                renounced_seen = True
+                continue
+            if cand_lower in seen_accounts:
+                continue
+            try:
+                acct = accounts.at(cand, force=True)
+                privileged_accounts.append(acct)
+                seen_accounts.add(cand_lower)
+                if not owner_address:
+                    owner_address = cand
+                print(f"  Owner/privileged candidate: {cand}")
+            except Exception as candidate_error:
+                print(f"  Candidate impersonation failed ({cand}): {type(candidate_error).__name__}")
+
         result["details"]["owner_address"] = owner_address
 
-        if not owner_address:
+        if not privileged_accounts:
+            if renounced_seen:
+                result["details"]["owner_renounced"] = True
+                result["result"] = "NO"
+                result["confidence"] = "HIGH"
+                result["reason"] = "Ownership renounced - 소유권 포기됨"
+                print("  Owner renounced (only zero/dead candidates)")
+                return result
             result["result"] = "NO"
             result["confidence"] = "MEDIUM"
-            result["reason"] = "Owner 확인 불가 - 거래 중단 가능성 낮음"
-            print(f"  Owner 확인 불가")
+            result["reason"] = "Can't find privileged accounts - 권한 주소 찾을 수 없음"
+            print("  Privileged accounts not found")
             return result
 
-        if owner_address == "0x0000000000000000000000000000000000000000":
-            result["details"]["owner_renounced"] = True
-            result["result"] = "NO"
-            result["confidence"] = "HIGH"
-            result["reason"] = "Owner가 renounced됨 - 거래 중단 권한 없음"
-            print(f"  Owner renounced: {owner_address}")
-            return result
-
-        owner_account = accounts.at(owner_address, force=True)
-        print(f"  ✅ Owner 발견: {owner_address}")
-
-        privileged_accounts = [owner_account]
-        seen_accounts = {owner_address.lower()}
-        if hasattr(detector, "owner_candidate"):
-            for candidate in detector.owner_candidate:
-                if not candidate:
-                    continue
-                candidate_lower = candidate.lower()
-                if candidate_lower in seen_accounts:
-                    continue
-                try:
-                    candidate_account = accounts.at(candidate, force=True)
-                    privileged_accounts.append(candidate_account)
-                    seen_accounts.add(candidate_lower)
-                    print(f"  추가 권한 후보 확보: {candidate}")
-                except Exception as candidate_error:
-                    print(f"  추가 후보 impersonate 실패 ({candidate}): {type(candidate_error).__name__}")
+        owner_account = privileged_accounts[0]
+        print(f"  Using owner: {owner_account.address}")
 
         # Phase 2: 거래 중단 함수 탐지
         print("\n[Phase 2] 거래 중단 함수 탐지")
@@ -201,15 +207,16 @@ def run_scenario(detector):
         token_with_full_abi = Contract.from_abi("Token", detector.token_address, abi)
 
         def ensure_account_funded(acct):
-            # 높은 gas_limit를 고려하여 충분한 ETH 확보 (최소 5 ETH)
-            min_balance = int(5.0 * 1e18)
+            # 충분한 ETH 확보 (최소 10 ETH)
+            min_balance = int(10.0 * 1e18)
             if acct.balance() < min_balance:
                 try:
-                    accounts[0].transfer(acct.address, min_balance - acct.balance(), gas_price=GAS_PRICE,gas_limit=GAS_LIMIT)
+                    accounts[0].transfer(acct.address, min_balance - acct.balance(), gas_price=GAS_PRICE, gas_limit=GAS_LIMIT)
                 except Exception as funding_error:
-                    print(f"  {acct.address} 가스 충전 실패: {type(funding_error).__name__}")
+                    print(f"  {acct.address} 가스충전 실패: {type(funding_error).__name__}")
 
         def execute_with_privileged(callable_fn):
+            """Try executing with available privileged accounts."""
             last_error = None
             for acct in privileged_accounts:
                 ensure_account_funded(acct)
@@ -228,43 +235,38 @@ def run_scenario(detector):
         buyer1 = accounts[1]
         print(f"  Buyer1: {buyer1.address}")
 
-        # Quote Token 준비
-        quote_token_buyer1, quote_addr = prepare_account_with_quote(detector, buyer1, ETH_TRANSFER_AMOUNT)
-        quote_balance_buyer1 = quote_token_buyer1.balanceOf(buyer1.address)
-        path_reverse = [detector.token_address, quote_addr]
-
+        ensure_eth_balance(buyer1)
+        buyer1_target = determine_target_tokens(detector, SUSPEND_TARGET_RATIO)
         try:
-            deadline = chain.time() + 300
-            path = [quote_addr, detector.token_address]
-
-            # 받은 quote token의 10% 사용 (decimals 무관)
-            buy_amount = quote_balance_buyer1 // 10
-
-            quote_token_buyer1.approve(detector.router_addr, buy_amount, {"from": buyer1, "gas_price": GAS_PRICE})
-            network.web3.provider.make_request("anvil_mine", [1])
-
-            detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                buy_amount, 0, path, buyer1.address, deadline,
-                {"from": buyer1, "gas_price": GAS_PRICE}
-            )
-            network.web3.provider.make_request("anvil_mine", [1])
-
-            balance = detector.token.balanceOf(buyer1.address)
-            if balance > 0:
-                print(f"  ✅ Buyer1 매수 성공 (잔액: {balance / 1e18:.4f})")
-                result["details"]["buyer1_initial_buy"] = True
+            if utils.buy_tokens_from_pool(detector, buyer1, buyer1_target):
+                balance = detector.token.balanceOf(buyer1.address)
+                if balance > 0:
+                    print(f"  ✅ Buyer1 매수 성공 (수량: {balance / 1e18:.4f})")
+                    result["details"]["buyer1_initial_buy"] = True
+                else:
+                    print("  ⚠️  Buyer1 매수 실패 (수량 0)")
+                    result["result"] = "UNKNOWN"
+                    result["confidence"] = "LOW"
+                    result["reason"] = "Buyer1 매수 실패(수량 0) - 시나리오 중단"
+                    return result
             else:
-                print(f"  ⚠️  Buyer1 매수 실패 (잔액 0)")
+                print("  ⚠️  Buyer1 매수 실패: buy_tokens_from_pool returned False")
+                result["result"] = "UNKNOWN"
+                result["confidence"] = "LOW"
+                result["reason"] = "Buyer1 매수 실패 - 시나리오 중단"
+                return result
         except Exception as e:
             print(f"  ⚠️  Buyer1 매수 실패: {type(e).__name__}")
-            result["details"]["evidence"].append("buyer1_initial_blocked")
+            result["result"] = "UNKNOWN"
+            result["confidence"] = "LOW"
+            result["reason"] = f"Buyer1 매수 실패 - 시뮬레이션 중단: {type(e).__name__}"
+            return result
 
         # Phase 4: Owner가 거래 통제 함수 호출
         print("\n[Phase 4] Owner가 거래 통제 함수 호출")
         suspension_executed = False
         executed_function = None
 
-        # pause 계열 함수 시도
         if not suspension_executed and "pause" in suspension_funcs:
             func_name = suspension_funcs["pause"]
             try:
@@ -290,7 +292,6 @@ def run_scenario(detector):
                 print(f"  ⚠️  {func_name}() 실행 실패: {type(e).__name__}")
                 print(f"     에러 상세: {error_msg}")
 
-        # disableTrading 계열 함수 시도
         if not suspension_executed and "disableTrading" in suspension_funcs:
             func_name = suspension_funcs["disableTrading"]
             try:
@@ -314,9 +315,8 @@ def run_scenario(detector):
             except Exception as e:
                 error_msg = str(e) if str(e) else type(e).__name__
                 print(f"  ⚠️  {func_name}() 실행 실패: {type(e).__name__}")
-                print(f"     에러 상세: {error_msg}")
+                print(f"     에러 세부: {error_msg}")
 
-        # enableTrading 계열 함수 시도 (true/false 둘 다)
         if not suspension_executed and "enableTrading" in suspension_funcs:
             func_name = suspension_funcs["enableTrading"]
             try:
@@ -352,6 +352,10 @@ def run_scenario(detector):
 
         if not suspension_executed:
             print("  ⚠️  모든 거래 통제 함수 실행 실패")
+            result["result"] = "UNKNOWN"
+            result["confidence"] = "LOW"
+            result["reason"] = "거래 통제 후보 함수 실행 실패 - Wrong preveileged address or ownership renounced"
+            return result
 
         # Phase 5: Buyer1 매도 시도
         print("\n[Phase 5] Buyer1 매도 시도")
@@ -360,144 +364,110 @@ def run_scenario(detector):
         if buyer1_balance > 0:
             try:
                 sell_amount = int(buyer1_balance * SELL_RATIO)
-                detector.token.approve(detector.router_addr, sell_amount, {"from": buyer1, "gas_price": GAS_PRICE})
-
-                deadline = chain.time() + 300
-                detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                    sell_amount, 0, path_reverse, buyer1.address, deadline,
-                    {"from": buyer1, "gas_price": GAS_PRICE}
-                )
-
-                print(f"  ✅ Buyer1 매도 성공")
-                result["details"]["buyer1_sell_after_suspend"] = True
+                sell_success, _ = utils.sell_tokens_to_pool(detector, buyer1, sell_amount)
+                if sell_success:
+                    print("  ✅ Buyer1 매도 성공")
+                    result["details"]["buyer1_sell_after_suspend"] = True
+                else:
+                    print("  ⚠️  Buyer1 매도 실패")
+                    result["details"]["buyer1_sell_after_suspend"] = False
+                    result["details"]["evidence"].append("buyer1_sell_blocked")
             except Exception as e:
-                print(f"  ❌ Buyer1 매도 실패: {type(e).__name__}")
+                print(f"  ⚠️  Buyer1 매도 실패: {type(e).__name__}")
                 result["details"]["buyer1_sell_after_suspend"] = False
                 result["details"]["evidence"].append("buyer1_sell_blocked")
         else:
-            print(f"  ⚠️  Buyer1 잔액 없음 - 매도 스킵")
+            print("  ⚠️  Buyer1 수량 없음 - 매도 스킵")
             result["details"]["buyer1_sell_after_suspend"] = None
 
-        # Phase 6: Buyer2 매수/매도 시도 (중단 후)
+        # Phase 6: Buyer2 매수/매도 시도 (거래 중단 후)
         print("\n[Phase 6] Buyer2 매수/매도 시도 (거래 중단 후)")
         buyer2 = accounts[2]
         print(f"  Buyer2: {buyer2.address}")
 
-        # Quote Token 준비
-        quote_token_buyer2, _ = prepare_account_with_quote(detector, buyer2, ETH_TRANSFER_AMOUNT)
-        quote_balance_buyer2 = quote_token_buyer2.balanceOf(buyer2.address)
-        path_reverse_buyer2 = [detector.token_address, quote_addr]
-
+        ensure_eth_balance(buyer2)
+        buyer2_target = determine_target_tokens(detector, SUSPEND_TARGET_RATIO)
         try:
-            deadline = chain.time() + 300
-            path = [quote_addr, detector.token_address]
+            if utils.buy_tokens_from_pool(detector, buyer2, buyer2_target):
+                buyer2_balance = detector.token.balanceOf(buyer2.address)
+                if buyer2_balance > 0:
+                    print(f"  ✅ Buyer2 매수 성공 (수량: {buyer2_balance / 1e18:.4f})")
+                    result["details"]["buyer2_buy_after_suspend"] = True
 
-            # 받은 quote token의 10% 사용 (decimals 무관)
-            buy_amount_buyer2 = quote_balance_buyer2 // 10
+                    try:
+                        sell_amount2 = int(buyer2_balance * SELL_RATIO)
+                        sell_success2, _ = utils.sell_tokens_to_pool(detector, buyer2, sell_amount2)
 
-            quote_token_buyer2.approve(detector.router_addr, buy_amount_buyer2, {"from": buyer2, "gas_price": GAS_PRICE})
-            network.web3.provider.make_request("anvil_mine", [1])
-
-            detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                buy_amount_buyer2, 0, path, buyer2.address, deadline,
-                {"from": buyer2, "gas_price": GAS_PRICE}
-            )
-            network.web3.provider.make_request("anvil_mine", [1])
-
-            buyer2_balance = detector.token.balanceOf(buyer2.address)
-            if buyer2_balance > 0:
-                print(f"  ✅ Buyer2 매수 성공 (잔액: {buyer2_balance / 1e18:.4f})")
-                result["details"]["buyer2_buy_after_suspend"] = True
-
-                try:
-                    sell_amount2 = int(buyer2_balance * SELL_RATIO)
-                    detector.token.approve(detector.router_addr, sell_amount2, {"from": buyer2, "gas_price": GAS_PRICE})
-
-                    detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                        sell_amount2, 0, path_reverse_buyer2, buyer2.address, deadline,
-                        {"from": buyer2, "gas_price": GAS_PRICE}
-                    )
-
-                    print(f"  ✅ Buyer2 매도 성공")
-                    result["details"]["buyer2_sell_after_suspend"] = True
-                except Exception as e2:
-                    print(f"  ❌ Buyer2 매도 실패: {type(e2).__name__}")
-                    result["details"]["buyer2_sell_after_suspend"] = False
-                    result["details"]["evidence"].append("buyer2_sell_blocked")
+                        if sell_success2:
+                            print("  ✅ Buyer2 매도 성공")
+                            result["details"]["buyer2_sell_after_suspend"] = True
+                        else:
+                            print("  ⚠️  Buyer2 매도 실패")
+                            result["details"]["buyer2_sell_after_suspend"] = False
+                            result["details"]["evidence"].append("buyer2_sell_blocked")
+                    except Exception as e2:
+                        print(f"  ⚠️  Buyer2 매도 실패: {type(e2).__name__}")
+                        result["details"]["buyer2_sell_after_suspend"] = False
+                        result["details"]["evidence"].append("buyer2_sell_blocked")
+                else:
+                    print("  ⚠️  Buyer2 매수 실패 (수량 0)")
+                    result["details"]["buyer2_buy_after_suspend"] = False
+                    result["details"]["evidence"].append("buyer2_blocked")
             else:
-                print(f"  ❌ Buyer2 매수 실패 (잔액 0)")
+                print("  ⚠️  Buyer2 매수 실패: buy_tokens_from_pool returned False")
                 result["details"]["buyer2_buy_after_suspend"] = False
                 result["details"]["evidence"].append("buyer2_blocked")
         except Exception as e:
-            print(f"  ❌ Buyer2 매수 실패: {type(e).__name__}")
+            print(f"  ⚠️  Buyer2 매수 실패: {type(e).__name__}")
             result["details"]["buyer2_buy_after_suspend"] = False
             result["details"]["evidence"].append("buyer2_blocked")
 
-        # Phase 7: Owner 거래 가능 여부 확인
-        print("\n[Phase 7] Owner 거래 가능 여부 확인")
-
-        # Quote token 준비
-        quote_token, quote_addr = prepare_account_with_quote(detector, owner_account, ETH_TRANSFER_AMOUNT)
-
+        # Phase 7: Owner 거래 가능성 확인
+        print("\n[Phase 7] Owner 거래 가능성 확인")
         try:
-            deadline = chain.time() + 300
-            path = [quote_addr, detector.token_address]
+            ensure_eth_balance(owner_account)
+            owner_target = determine_target_tokens(detector, SUSPEND_TARGET_RATIO)
+            if utils.buy_tokens_from_pool(detector, owner_account, owner_target):
+                owner_balance = detector.token.balanceOf(owner_account.address)
+                if owner_balance > 0:
+                    print(f"  ✅ Owner 매수 성공 (수량: {owner_balance / 1e18:.4f})")
 
-            quote_balance = quote_token.balanceOf(owner_account.address)
-            # 받은 quote token의 10% 사용 (decimals 무관)
-            quote_amount = quote_balance // 10
-
-            quote_token.approve(detector.router_addr, quote_amount, {"from": owner_account, "gas_price": GAS_PRICE})
-            network.web3.provider.make_request("anvil_mine", [1])
-
-            detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                quote_amount, 0, path, owner_account.address, deadline,
-                {"from": owner_account, "gas_price": GAS_PRICE}
-            )
-            network.web3.provider.make_request("anvil_mine", [1])
-
-            owner_balance = detector.token.balanceOf(owner_account.address)
-            if owner_balance > 0:
-                print(f"  ✅ Owner 매수 성공 (잔액: {owner_balance / 1e18:.4f})")
-
-                try:
-                    sell_amount_owner = int(owner_balance * SELL_RATIO)
-                    detector.token.approve(detector.router_addr, sell_amount_owner, {"from": owner_account, "gas_price": GAS_PRICE})
-                    network.web3.provider.make_request("anvil_mine", [1])
-
-                    path_reverse = [detector.token_address, quote_addr]
-                    detector.router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                        sell_amount_owner, 0, path_reverse, owner_account.address, deadline,
-                        {"from": owner_account, "gas_price": GAS_PRICE}
-                    )
-                    network.web3.provider.make_request("anvil_mine", [1])
-
-                    print(f"  ✅ Owner 매도 성공")
-                    result["details"]["owner_trade_after_suspend"] = True
-                    result["details"]["evidence"].append("owner_can_trade")
-                except Exception as e2:
-                    print(f"  ❌ Owner 매도 실패: {type(e2).__name__}")
+                    try:
+                        sell_amount_owner = int(owner_balance * SELL_RATIO)
+                        sell_success_owner, _ = utils.sell_tokens_to_pool(detector, owner_account, sell_amount_owner)
+                        if sell_success_owner:
+                            print("  ✅ Owner 매도 성공")
+                            result["details"]["owner_trade_after_suspend"] = True
+                            result["details"]["evidence"].append("owner_can_trade")
+                        else:
+                            print("  ⚠️  Owner 매도 실패")
+                            result["details"]["owner_trade_after_suspend"] = False
+                    except Exception as e2:
+                        print(f"  ⚠️  Owner 매도 실패: {type(e2).__name__}")
+                        result["details"]["owner_trade_after_suspend"] = False
+                else:
+                    print("  ⚠️  Owner 매수 실패 (수량 0)")
                     result["details"]["owner_trade_after_suspend"] = False
             else:
-                print(f"  ❌ Owner 매수 실패 (잔액 0)")
+                print("  ⚠️  Owner 매수 실패: buy_tokens_from_pool returned False")
                 result["details"]["owner_trade_after_suspend"] = False
         except Exception as e:
-            print(f"  ❌ Owner 매수 실패: {type(e).__name__}")
+            print(f"  ⚠️  Owner 매수 실패: {type(e).__name__}")
             result["details"]["owner_trade_after_suspend"] = False
 
         # Phase 8: 최종 판정
         print("\n[Phase 8] 최종 판정")
 
-        buyer1_initial_blocked = result["details"]["buyer1_initial_buy"] == False
-        buyer1_sell_blocked = result["details"]["buyer1_sell_after_suspend"] == False
-        buyer2_buy_blocked = result["details"]["buyer2_buy_after_suspend"] == False
-        buyer2_sell_blocked = result["details"]["buyer2_sell_after_suspend"] == False
-        owner_can_trade = result["details"]["owner_trade_after_suspend"] == True
+        buyer1_initial_blocked = result["details"]["buyer1_initial_buy"] is False
+        buyer1_sell_blocked = result["details"]["buyer1_sell_after_suspend"] is False
+        buyer2_buy_blocked = result["details"]["buyer2_buy_after_suspend"] is False
+        buyer2_sell_blocked = result["details"]["buyer2_sell_after_suspend"] is False
+        owner_can_trade = result["details"]["owner_trade_after_suspend"] is True
 
         evidence_count = len(result["details"]["evidence"])
 
-        print(f"  수집된 증거:")
-        print(f"    - 거래 통제 함수 발견: {len(suspension_funcs)}개")
+        print("  수집된 증거:")
+        print(f"    - 거래 차단 함수 발견: {len(suspension_funcs)}개")
         print(f"    - 함수 실행 성공: {suspension_executed}")
         print(f"    - Buyer1 초기 차단: {buyer1_initial_blocked}")
         print(f"    - Buyer1 매도 차단: {buyer1_sell_blocked}")
@@ -506,33 +476,37 @@ def run_scenario(detector):
         print(f"    - Owner 거래 가능: {owner_can_trade}")
         print(f"    - 총 증거: {evidence_count}개")
 
-        users_blocked = buyer1_initial_blocked or buyer1_sell_blocked or buyer2_buy_blocked or buyer2_sell_blocked
+        users_blocked = buyer1_sell_blocked or buyer2_buy_blocked or buyer2_sell_blocked
 
-        # 판정 로직
-        if suspension_funcs and users_blocked and owner_can_trade:
-            result["result"] = "YES"
-            result["confidence"] = "HIGH"
-            func_list = ", ".join([f"{k}:{v}" for k, v in suspension_funcs.items()])
-            result["reason"] = f"거래 통제 함수 보유({func_list}) + Owner만 거래 가능 + 일반 사용자 차단 - 악의적 거래 통제"
-        elif suspension_executed and users_blocked:
-            result["result"] = "YES"
-            result["confidence"] = "HIGH"
-            result["reason"] = f"{executed_function}() 실행 + 일반 사용자 거래 차단 확인 - 거래 중단 기능 존재"
-        elif suspension_funcs and users_blocked:
-            result["result"] = "YES"
-            result["confidence"] = "MEDIUM"
-            func_list = ", ".join([f"{k}:{v}" for k, v in suspension_funcs.items()])
-            result["reason"] = f"거래 통제 함수 보유({func_list}) + 일반 사용자 거래 차단 확인 - 거래 통제 가능"
+        if users_blocked:
+            if suspension_funcs and owner_can_trade:
+                result["result"] = "YES"
+                result["confidence"] = "HIGH"
+                func_list = ", ".join([f"{k}:{v}" for k, v in suspension_funcs.items()])
+                result["reason"] = f"거래 통제 함수 보유({func_list}) + Owner가 거래 가능 + 일반 사용자의 거래 차단 - 의도적 거래 통제"
+            elif suspension_executed:
+                result["result"] = "YES"
+                result["confidence"] = "HIGH"
+                result["reason"] = f"{executed_function}() 실행 + 일반 사용자의 거래 차단 확인 - 거래 중단 기능 존재"
+            elif suspension_funcs:
+                result["result"] = "YES"
+                result["confidence"] = "MEDIUM"
+                func_list = ", ".join([f"{k}:{v}" for k, v in suspension_funcs.items()])
+                result["reason"] = f"거래 통제 함수 보유({func_list}) + 일반 사용자의 거래 차단 확인 - 거래 중단 가능"
+            else:
+                result["result"] = "UNKNOWN"
+                result["confidence"] = "LOW"
+                result["reason"] = "차단은 확인됐으나 통제 함수/실행 정보 부족"
         elif suspension_executed:
-            result["result"] = "YES"
+            result["result"] = "NO"
             result["confidence"] = "MEDIUM"
-            result["reason"] = f"{executed_function}() 실행 성공 - 거래 통제 가능"
+            executed_name = executed_function or "suspension"
+            result["reason"] = f"{executed_name} 실행됐으나 거래가 차단되지 않음"
         elif suspension_funcs:
-            # 함수는 있지만 실행 실패 & 차단 증거 없음 → 작동하지 않음
             result["result"] = "NO"
             result["confidence"] = "MEDIUM"
             func_list = ", ".join([f"{k}:{v}" for k, v in suspension_funcs.items()])
-            result["reason"] = f"거래 통제 함수 발견({func_list})했으나 실행 실패 및 차단 증거 없음 - 기능 미작동"
+            result["reason"] = f"거래 통제 함수 보유({func_list})지만 거래 차단 증거 없음"
         else:
             result["result"] = "NO"
             result["confidence"] = "HIGH"
