@@ -40,7 +40,7 @@ class DataCollectorAdapter:
             chainbase_api_key=settings.CHAINBASE_API_KEY
         )
 
-    def collect_all(self, token_addr: str, days: int = 14) -> Dict[str, Any]:
+    def collect_all(self, token_addr: str, days) -> Dict[str, Any]:
         """
         Collect all blockchain data for a token.
 
@@ -683,6 +683,7 @@ class ResultAggregatorAdapter:
     def aggregate(
         self,
         token_info: 'TokenInfo',
+        is_unformed,
         honeypot_da_result: Dict[str, Any],
         honeypot_ml_result: Dict[str, Any],
         exit_ml_result: Dict[str, Any]
@@ -712,33 +713,99 @@ class ResultAggregatorAdapter:
             scam_types = self._identify_scam_types(...)
             insights = self._generate_insights(...)
         """
+        from api.models import HoneypotProcessedData
         # Placeholder aggregation logic
         scam_types = []
-        insights = []
-        risk_score = 0.0
+        risk_score = {
+            "honeypot":None,
+            "exit":None
+        }
+        honeypot_type = {
+            "type":"honeypot",
+            "level":None
+        }
+        exit_type = {
+            "type":"exit",
+            "level":None
+        }
+        honeypot_score = honeypot_ml_result.get("probability")
+        exit_score = exit_ml_result.get("probability")
 
-        # Aggregate honeypot results
-        if honeypot_da_result.get('is_honeypot') or honeypot_ml_result.get('is_honeypot'):
-            scam_types.append('Honeypot')
-            risk_score += 40.0
-            insights.extend(honeypot_da_result.get('indicators', []))
+        risk_score["honeypot"] = honeypot_score
+        risk_score["exit"] = exit_score
 
-        # Aggregate exit scam results
-        if exit_ml_result.get('is_exit_scam'):
-            scam_types.append('Exit Scam')
-            risk_score += 50.0
-            insights.append(f"Exit scam probability: {exit_ml_result.get('probability', 0):.2%}")
+        if honeypot_score <= 0.02:
+            honeypot_type['level'] = "Safe"
+        elif honeypot_score <= 0.48999999999999977:
+            honeypot_type['level'] = "Caution"
+        elif honeypot_score <= 0.979:
+            honeypot_type['level'] = "Warning"
+        else:
+            honeypot_type['level'] = "Critical"
 
-        # Normalize risk score to 0-100
-        risk_score = min(100.0, risk_score)
+        if is_unformed:
+            exit_type['level'] = "no_market"
+        elif exit_score <= 0.02:
+            exit_type['level'] = "Safe"
+        elif exit_score <= 0.780502200126648:
+            exit_type['level'] = "Caution"
+        elif exit_score <= 0.995:
+            exit_type['level'] = "Warning"
+        else:
+            exit_type['level'] = "Critical"
+
+        scam_types.append(honeypot_type)
+        scam_types.append(exit_type)
+
+        exitInsight = {
+            "timestamp": exit_ml_result['timestamp'],
+            "tx_hash": exit_ml_result['tx_hash'],
+            "reserve_base_drop_frac": exit_ml_result['reserve_base_drop_frac'],
+            "reserve_quote": exit_ml_result['reserve_quote'],
+            "reserve_quote_drop_frac": exit_ml_result['reserve_quote_drop_frac'],
+            "price_ratio": exit_ml_result['price_ratio'],
+            "time_since_last_mint_sec": exit_ml_result['time_since_last_mint_sec'],
+            "liquidity_age_days": exit_ml_result['liquidity_age_days'],
+            "reserve_quote_drawdown_global": exit_ml_result['reserve_quote_drawdown_global']
+        }
+        
+        obj = HoneypotProcessedData.objects.get(token_info=token_info)
+
+        honeypotMlInsight = [
+            { "feat": honeypot_ml_result['top_feats'][0], "value": getattr(obj,honeypot_ml_result['top_feats'][0])},
+            { "feat": honeypot_ml_result["top_feats"][1], "value": getattr(obj,honeypot_ml_result['top_feats'][1])},
+            { "feat": honeypot_ml_result["top_feats"][2], "value": getattr(obj,honeypot_ml_result['top_feats'][2])},
+            { "feat": honeypot_ml_result["top_feats"][3], "value": getattr(obj,honeypot_ml_result['top_feats'][3])},
+            { "feat": honeypot_ml_result["top_feats"][4], "value": getattr(obj,honeypot_ml_result['top_feats'][4])}
+        ]
+
+        honeypotDaInsight = {
+            "buy_1": honeypot_da_result['buy_1'],
+            "buy_2": honeypot_da_result['buy_2'],
+            "buy_3": honeypot_da_result['buy_3'],
+            "sell_1": honeypot_da_result['sell_1'],
+            "sell_2":honeypot_da_result['sell_2'],
+            "sell_3":honeypot_da_result['sell_3'],
+            "sell_fail_type_1":honeypot_da_result['sell_fail_type_1'],
+            "sell_fail_type_2":honeypot_da_result['sell_fail_type_2'],
+            "sell_fail_type_3":honeypot_da_result['sell_fail_type_3'],
+            "trading_suspend_check":honeypot_da_result['trading_suspend_check']['result'],
+            "exterior_call_check":honeypot_da_result['exterior_call_check']['result'],
+            "unlimited_mint":honeypot_da_result['unlimited_mint']['result'],
+            "balance_manipulation":honeypot_da_result['balance_manipulation']['result'],
+            "tax_manipulation":honeypot_da_result['tax_manipulation']['result'],
+            "existing_holders_check":honeypot_da_result['existing_holders_check']['result']
+        }
 
         return {
             'risk_score': risk_score,
             'scam_types': scam_types,
-            'victim_insights': insights
+            'exitInsight': exitInsight,
+            'honeypotMlInsight': honeypotMlInsight,
+            'honeypotDaInsight': honeypotDaInsight
         }
 
-    def save_to_db(self, token_info: 'TokenInfo', aggregated_data: Dict[str, Any]):
+    def save_to_db(self, token_info: 'TokenInfo',is_unformed, aggregated_data: Dict[str, Any]):
         """
         Save final result to database.
 
@@ -747,11 +814,13 @@ class ResultAggregatorAdapter:
             aggregated_data: Dictionary from aggregate() method
         """
         from api.models import Result
-
+        print("test")
         Result.objects.create(
             token_addr=token_info.token_addr,
-            token_info=token_info,
+            is_unformed_lp=is_unformed,
             risk_score=aggregated_data['risk_score'],
             scam_types=aggregated_data['scam_types'],
-            victim_insights=aggregated_data['victim_insights']
+            exitInsight=aggregated_data['exitInsight'],
+            honeypotMlInsight=aggregated_data['honeypotMlInsight'],
+            honeypotDaInsight=aggregated_data['honeypotDaInsight']
         )

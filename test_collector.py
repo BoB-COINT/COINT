@@ -25,7 +25,7 @@ token_addr = "0x0368432eF69A2A91B792Be2B10bBb56E3A5C189F"
 
 print(f"\n🔍 수집 시작: {token_addr}")
 start_time = time.time()
-data = collector.collect_all(token_addr, days=14)
+data = collector.collect_all(token_addr,None)
 collection_time = time.time() - start_time
 
 print(f"\n📊 수집된 데이터:")

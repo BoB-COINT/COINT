@@ -149,20 +149,32 @@ class Result(models.Model):
         help_text="Analyzed token contract address"
     )
 
-    risk_score = models.FloatField(
+    created_at = models.DateTimeField(
+        default=timezone.now,
+        help_text="Analysis completion timestamp"
+    )
+
+    is_unformed_lp = models.IntegerField(
+        default = 0
+    )
+
+    risk_score = models.JSONField(
         help_text="Final scam score calculated after analysis"
     )
+
     scam_types = models.CharField(
         max_length=100,
         help_text="Detected scam categories"
     )
-    victim_insights = models.TextField(
-        help_text="Scam indicators found in analysis"
+
+    exitInsight = models.JSONField(
     )
 
-    created_at = models.DateTimeField(
-        default=timezone.now,
-        help_text="Analysis completion timestamp"
+    honeypotMlInsight = models.CharField(
+        max_length=100
+    )
+
+    honeypotDaInsight = models.JSONField(
     )
 
     class Meta:
