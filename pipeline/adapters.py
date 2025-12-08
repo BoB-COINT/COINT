@@ -237,6 +237,7 @@ class PreprocessorAdapter:
             owner_addr=token_info.token_creator_addr or "",
             pair_evt_records=pair_events,
             holder_records=holders,
+            holder_cnt=token_info.holder_cnt,  
         )
 
         # 🔐 token_addr 은 항상 TokenInfo 기준으로 강제 세팅
@@ -565,10 +566,18 @@ class HoneypotMLAnalyzerAdapter:
         for i in range(1, 6):
             col = f"top{i}_feat"
             val = row.get(col) if col in df_out.columns else None
-            # NaN이면 None으로 정리
             if pd.isna(val) if val is not None else False:
                 val = None
             top_feats.append(val)
+
+        # 👉 추가: 각 피처의 실제 값 가져오기
+        top_feat_values: list[float | None] = []
+        for i in range(1, 6):
+            col = f"top{i}_feat_value"
+            val = row.get(col) if col in df_out.columns else None
+            if pd.isna(val) if val is not None else False:
+                val = None
+            top_feat_values.append(float(val) if val is not None else None)
 
         result = {
             "is_honeypot": bool(pred == 1),
@@ -576,19 +585,20 @@ class HoneypotMLAnalyzerAdapter:
             "risk_level": risk_level,
             "threshold": float(self.threshold),
             "top_feats": top_feats,
+            "top_feat_values": top_feat_values,  # 🔹 새로 추가
             "status": status,
         }
 
         # 5) DB 저장
         self._save_to_db(token_info, result)
-
         return result
 
     def _save_to_db(self, token_info: "TokenInfo", result: Dict[str, Any]):
-        """Save honeypot ML results to HoneypotMlResult table."""
         from api.models import HoneypotMlResult
 
         top1, top2, top3, top4, top5 = (result["top_feats"] + [None] * 5)[:5]
+        v_list = (result.get("top_feat_values") or []) + [None] * 5
+        v1, v2, v3, v4, v5 = v_list[:5]
 
         HoneypotMlResult.objects.update_or_create(
             token_info=token_info,
@@ -602,6 +612,11 @@ class HoneypotMLAnalyzerAdapter:
                 "top3_feat": top3,
                 "top4_feat": top4,
                 "top5_feat": top5,
+                "top1_feat_value": v1,
+                "top2_feat_value": v2,
+                "top3_feat_value": v3,
+                "top4_feat_value": v4,
+                "top5_feat_value": v5,
                 "status": result["status"],
             },
         )

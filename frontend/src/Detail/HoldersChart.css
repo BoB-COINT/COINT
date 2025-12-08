@@ -1,7 +1,7 @@
 .holders-chart {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 10px;
   width: 100%;
 }
 
@@ -16,6 +16,7 @@
   align-items: center;
   gap: 15px;  
   width: 100%;
+  min-height: var(--holder-row-h);
 }
 
 .holder-address {
@@ -47,3 +48,19 @@
   min-width: 50px; 
   text-align: right;
 }
+
+:root { --holder-row-h: 36px; --holder-gap: 6px; } /* 대안: row 34px */
+.holders-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--holder-gap);
+  max-height: calc(4 * var(--holder-row-h) + 2 * var(--holder-gap));
+  overflow: auto;
+  padding-right: 8px; /* 스크롤바와 텍스트 겹침 방지 */
+}
+/* HoldersChart.css */
+.holders-scroll::-webkit-scrollbar { width: 8px; /* 대안: 8px */ }
+.holders-scroll::-webkit-scrollbar-track { background: transparent; }
+.holders-scroll::-webkit-scrollbar-thumb:hover { filter: brightness(0.9); }
+.holders-scroll { scrollbar-width: thin; /* auto/thin */
+                  scrollbar-color: #87888C transparent; }

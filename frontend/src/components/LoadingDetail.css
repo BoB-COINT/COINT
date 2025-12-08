@@ -90,7 +90,8 @@
     height: 100%;
     background: linear-gradient(90deg, #4880FF, #6B9FFF, #8FB5FF);
     border-radius: 2px;
-    animation: progress 2s ease-in-out infinite;
+    width: 0;                         
+    transition: width 0.4s ease-out;
 }
 
 @keyframes progress {

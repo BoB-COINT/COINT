@@ -41,25 +41,29 @@ function SearchBar() {
             autoCapitalize="none"
             autoCorrect="off"
             placeholder="Search here.."
+            className="search-input" 
             style={{
                 flex: '1',
                 padding: '15px',
-                borderRadius: '8px',
-                border: 'none',
-                backgroundColor: '#21222D',
+                borderRadius: '999px',  
+                border: '2px solid rgba(255, 255, 255, 0.08)',
+                backgroundColor: 'rgba(33, 34, 45, 0.75)',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
                 color: '#d2d2d2'
             }}
         />
         <button onClick={handleSearch}
             style={{
-                padding: '10px 20px',
-                borderRadius: '8px',
-                border: 'none',
-                backgroundColor: '#21222D',
-                color: '#d2d2d2',
+                padding: '10px 18px',
+                borderRadius: '999px',
+                border: '2px solid rgba(255, 255, 255, 0.08)',
+                backgroundColor: 'rgba(33, 34, 45, 0.85)',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
                 cursor: 'pointer',
                 display: 'flex',
-                alignItems: 'center'
+                alignItems: 'center'    
             }}
         >
             <img

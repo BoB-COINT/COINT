@@ -1,9 +1,51 @@
-.token-table-grid {
-  display: grid;
-  grid-template-columns: 0.8fr 0.8fr 1fr 0.2fr; 
-  align-items: center;
-  padding: 20px 30px; 
+.home-search-wrapper {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;  
+  justify-content: center;
+  padding: 14vh 16px 0;
 }
 
-.header-address { justify-self: center; transform: translateX(-5px); } 
-.header-type    { justify-self: center; transform: translateX(20px); } 
+.home-search-inner {
+  width: 100%;
+  max-width: 900px; /* 선택사항 */
+}
+
+.home-search-wrapper .search-input {
+  border: 2px solid rgba(255, 255, 255, 0.22); /* 더 밝고 굵게 */
+  color: #f5f5f7;                               /* 입력 글자 더 밝게 */
+  font-weight: 300;                             /* 입력 글자 살짝 굵게 */
+}
+
+.home-search-wrapper .search-input::placeholder {
+  color: rgba(255, 255, 255, 0.65);             /* placeholder 더 밝게 */
+  font-weight: 500;                             /* placeholder도 살짝 굵게 */
+}
+
+/* 로고 + 문구를 가운데 정렬 */
+.home-search-inner {
+  width: 100%;
+  max-width: 900px;
+  text-align: center;
+}
+
+/* 로고를 가운데 크게 */
+.home-logo {
+  display: block;
+  margin: 0 auto 32px;
+  width: 260px;   
+  max-width: 600px;    /* 너무 크면 180~220px 사이로만 조절 */
+}
+
+/* 로고 아래 설명 문구 */
+.home-tagline {
+  margin: 8px auto 30px;
+  font-size: 16px;            /* 필요하면 15~16px로 살짝 키워도 됨 */
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.906);
+}
+
+.home-tagline-em {
+  font-weight: 630;                 /* 굵게 */
+  color: rgba(255, 255, 255, 0.956);  /* 나머지 문장보다 살짝 더 밝게 */
+}

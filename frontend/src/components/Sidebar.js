@@ -3,20 +3,27 @@ import logo from '../logo.svg'
 import homeIcon from '../assets/icons/home.png';
 import detailIcon from '../assets/icons/detail.png'; 
 import { motion } from 'framer-motion'
+import './Sidebar.css';
 
 function Sidebar() {
     const location = useLocation(); 
 
     return (
-        <div style={{
+        <div
+        className="sidebar" 
+        style={{
             width: '200px',
-            backgroundColor : '#171821',
+            backgroundColor: 'rgba(23, 24, 33, 0.82)',  // ← 불투명 #171821 대신
             padding: '30px',
-            minHeight: '100vh'
+            minHeight: '100vh',
+            backdropFilter: 'blur(8px)',               // ← glass 느낌
+            WebkitBackdropFilter: 'blur(8px)',
+            boxShadow: '0 0 24px rgba(0, 0, 0, 0.45)',  // ← 살짝 떠 있는 느낌
+            borderRight: '1px solid rgba(255, 255, 255, 0.03)'
         }}>
             {/* 로고 */}
             <Link to="/" style={{ testDecoration: 'none' }}>
-                <img src={logo} alt="COINT Logo" style={{ width: '100px', marginLeft: '20px', marginBottom: '40px' }} />
+                <img src={logo} alt="COINT Logo" style={{ width: '100px', marginLeft: '45px', marginBottom: '40px' }} />
             </Link>
 
             {/* Home 메뉴 */}

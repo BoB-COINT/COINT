@@ -650,29 +650,58 @@ class HoneypotMlResult(models.Model):
         blank=True,
         help_text="Most important feature name (rank 1)",
     )
+    top1_feat_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Value of top1 feature on this token",
+    )
+
     top2_feat = models.CharField(
         max_length=64,
         null=True,
         blank=True,
         help_text="Feature name (rank 2)",
     )
+    top2_feat_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Value of top2 feature on this token",
+    )
+
     top3_feat = models.CharField(
         max_length=64,
         null=True,
         blank=True,
         help_text="Feature name (rank 3)",
     )
+    top3_feat_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Value of top3 feature on this token",
+    )
+
     top4_feat = models.CharField(
         max_length=64,
         null=True,
         blank=True,
         help_text="Feature name (rank 4)",
     )
+    top4_feat_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Value of top4 feature on this token",
+    )
+
     top5_feat = models.CharField(
         max_length=64,
         null=True,
         blank=True,
         help_text="Feature name (rank 5)",
+    )
+    top5_feat_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Value of top5 feature on this token",
     )
 
     status = models.CharField(

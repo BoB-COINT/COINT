@@ -1,7 +1,10 @@
 import React from 'react';
 import './LoadingDetail.css';
 
-function LoadingDetail() {
+function LoadingDetail({progress = 60}) {
+
+    const safeProgress = Math.min(Math.max(progress, 0), 100);
+
     return (
         <div className="loading-detail-container">
             <div className="loading-detail-content">
@@ -15,7 +18,10 @@ function LoadingDetail() {
                     잠시만 기다려주세요
                 </p>
                 <div className="loading-progress">
-                    <div className="progress-bar"></div>
+                    <div
+                        className="progress-bar"
+                        style={{ width: `${safeProgress}%` }}  // 🔹 여기만 변경
+                    />
                 </div>
             </div>
         </div>

@@ -3,7 +3,6 @@ import { useSearchParams } from 'react-router-dom';
 import './Detail.css';
 import TokenInfoCard from '../Detail/TokenInfoCard';
 import { mockDetailData } from '../mockData/detailData';
-import ScamTypeCard from '../Detail/ScamTypeCard';
 import RiskScoreCard from '../Detail/RiskScoreCard';
 import HoldersChart from '../Detail/HoldersChart';
 import EmptyDetailState from '../components/EmptyDetailState';
@@ -94,9 +93,6 @@ function Detail() {
             </div>
             <div className="detail-holders">
                 <HoldersChart token={tokenData} />
-            </div>
-            <div className="detail-scam-type">
-                <ScamTypeCard token={tokenData} />
             </div>
             <div className="detail-victim-insights">
                 <VictimInsightsCard items={tokenData.victimInsights ?? []} />

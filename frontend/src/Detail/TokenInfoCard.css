@@ -1,7 +1,7 @@
 .token-info-card {
     display: flex;
     flex-direction: column;
-    gap: 13px;
+    gap: 10px;
 }
 
 /* 헤더 */
@@ -84,3 +84,15 @@
     font-weight: 400;
     word-break: break-all;
 }
+
+.info-sub {
+    padding-left: 120px;
+    margin-top: 2px;
+    font-size: 12px;
+    color: #b9bac0;
+    line-height: 1.4;
+}
+.info-sub .meta-label { color:#87888C; }
+.info-sub .meta-value { color:#FFFFFF; }        /* 값만 강조 */
+.info-sub .meta-paren { color:#FFFFFF; }        /* 괄호는 라벨색과 통일(선택) */
+.info-sub .meta-sep { margin: 0 6px; }  

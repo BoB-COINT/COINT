@@ -390,6 +390,7 @@ def run_v12_inference(df_raw: pd.DataFrame, compute_shap: bool = True) -> pd.Dat
     )
 
     # SHAP 기반 top-5 feature (원하면)
+        # SHAP 기반 top-5 feature (원하면)
     if compute_shap:
         try:
             explainer = shap.TreeExplainer(model)
@@ -402,6 +403,7 @@ def run_v12_inference(df_raw: pd.DataFrame, compute_shap: bool = True) -> pd.Dat
             top_k = 5
             n_samples, _ = shap_values.shape
             top_feat_names = {f"top{i+1}_feat": [] for i in range(top_k)}
+            top_feat_values = {f"top{i+1}_feat_value": [] for i in range(top_k)}  # 🔹 추가
 
             for i in range(n_samples):
                 sv_row = shap_values[i]
@@ -410,7 +412,13 @@ def run_v12_inference(df_raw: pd.DataFrame, compute_shap: bool = True) -> pd.Dat
                     name = feature_names[idx]
                     top_feat_names[f"top{rank+1}_feat"].append(name)
 
+                    # 👉 실제 입력 피처 값 (엔지니어드 포함)을 X_clean에서 가져오기
+                    val = float(X_clean.iloc[i, idx])
+                    top_feat_values[f"top{rank+1}_feat_value"].append(val)
+
             for col_name, values in top_feat_names.items():
+                df_out[col_name] = values
+            for col_name, values in top_feat_values.items():       # 🔹 추가
                 df_out[col_name] = values
 
         except Exception as e:

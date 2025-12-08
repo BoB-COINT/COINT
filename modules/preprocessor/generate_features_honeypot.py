@@ -21,14 +21,15 @@ from scipy.stats import variation
 # 1. 홀더 피처 계산
 #    (비활성 토큰 구분용 홀더 기반 추가 피처 포함)
 # =========================================
-def compute_holder_features(holders_df: pd.DataFrame) -> Dict[str, Any]:
+def compute_holder_features(holders_df: pd.DataFrame, total_holders_override: int | None = None, ) -> Dict[str, Any]:
     """
     holders_df: 한 토큰에 대한 홀더 정보 DataFrame
         - rel_to_total: 각 홀더의 지분 비율(%) 컬럼 사용
     """
     # holders 정보가 전혀 없는 경우
     if holders_df is None or len(holders_df) == 0:
-        total_holders = 0
+        total_holders = int(total_holders_override or 0)
+
         return {
             "gini_coefficient": 0.0,
             "total_holders": total_holders,
@@ -40,7 +41,7 @@ def compute_holder_features(holders_df: pd.DataFrame) -> Dict[str, Any]:
             "hhi_index": 0.0,
             "whale_domination_ratio": 0.0,
             "whale_presence_flag": 0,
-            "few_holders_flag": 1,  # 홀더가 없으니 사실상 극단적인 소수
+            "few_holders_flag": int(total_holders <= 3),
             "airdrop_like_flag": 0,
             "concentrated_large_community_score": 0.0,
             "hhi_per_holder": 0.0,
@@ -52,7 +53,8 @@ def compute_holder_features(holders_df: pd.DataFrame) -> Dict[str, Any]:
     balances_norm = balances / 100.0  # 0~1
 
     # total_holders: 실제 홀더 수
-    total_holders = len(balances_norm)
+    base_total_holders = len(balances_norm)
+    total_holders = int(total_holders_override) if total_holders_override is not None else int(base_total_holders)
 
     # 전체 합이 0인 경우(이론상 거의 없음) 방어 코드
     total_sum = balances_norm.sum()
@@ -140,6 +142,7 @@ def process_token(
     owner_addr: str,
     pair_evt_df: pd.DataFrame,
     holders_df: pd.DataFrame,
+    total_holders_override: int | None = None,  
 ) -> Dict[str, Any]:
     """
     token_addr: 토큰 주소 (string)
@@ -247,7 +250,10 @@ def process_token(
         max_sell_share = 0.0
 
     # 홀더 피처 계산
-    holder_features = compute_holder_features(holders_df)
+    holder_features = compute_holder_features(
+        holders_df,
+        total_holders_override=total_holders_override,
+    )
 
     inactive_token_flag = int(
         (total_buy_cnt == 0) and (total_sell_cnt == 0) and (windows_with_activity == 0)
@@ -296,6 +302,7 @@ def compute_honeypot_features(
     owner_addr: str,
     pair_evt_records: Iterable[Mapping[str, Any]],
     holder_records: Iterable[Mapping[str, Any]],
+    holder_cnt: int | None = None,
 ) -> Dict[str, Any]:
     # ✅ QuerySet truthiness 피하려고 None 만 체크
     pair_evt_list = list(pair_evt_records) if pair_evt_records is not None else []
@@ -309,4 +316,5 @@ def compute_honeypot_features(
         owner_addr=owner_addr,
         pair_evt_df=pair_evt_df,
         holders_df=holders_df,
+        total_holders_override=holder_cnt,
     )

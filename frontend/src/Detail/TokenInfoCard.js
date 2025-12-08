@@ -2,12 +2,12 @@ import './TokenInfoCard.css';
 import { useState } from 'react';
 
 function TokenInfoCard({ token }) {
-  const [copiedKey, setCopiedKey] = useState(null);  // ← 이렇게 수정!
+  const [copiedKey, setCopiedKey] = useState(null);  
 
-  const copyAddr = (key, value) => {  // ← 함수명 오타 수정 (conpyAddr → copyAddr)
+  const copyAddr = (key, value) => {  
     navigator.clipboard.writeText(value);
-    setCopiedKey(key);  // ← 어떤 버튼인지 저장
-    setTimeout(() => setCopiedKey(null), 900);  // ← 900ms 후 초기화
+    setCopiedKey(key);  
+    setTimeout(() => setCopiedKey(null), 900); 
   }
 
   return (
@@ -47,7 +47,23 @@ function TokenInfoCard({ token }) {
         <button className="icon-btn" onClick={() => copyAddr('pair', token.pair)}>
           {copiedKey === 'pair' ? '✓' : '⧉'}
         </button>
-      </div>        
+      </div> 
+      
+      <div className="info-sub">
+        <span className="meta">
+          <span className="meta-label">Token CreateTime</span>
+          <span className="meta-paren">(</span>
+          <span className="meta-value">{token.tokenCreateTs || '-'}</span>
+          <span className="meta-paren">)</span>
+        </span>
+        <span className="meta-sep"> · </span>
+        <span className="meta">
+          <sapn className="meta-label">Pair CreateTime</sapn>
+          <span className="meta-paren">(</span>
+          <span className="meta-value">{token.pairCreateTs || '-'}</span>
+          <span className="meta-paren">)</span>
+        </span>
+      </div>
 
     </div>
   );
