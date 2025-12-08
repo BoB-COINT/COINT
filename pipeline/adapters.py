@@ -784,14 +784,12 @@ class ResultAggregatorAdapter:
             "reserve_quote_drawdown_global": exit_ml_result['reserve_quote_drawdown_global']
         }
         
-        obj = HoneypotProcessedData.objects.get(token_info=token_info)
-
         honeypotMlInsight = [
-            { "feat": honeypot_ml_result['top_feats'][0], "value": getattr(obj,honeypot_ml_result['top_feats'][0])},
-            { "feat": honeypot_ml_result["top_feats"][1], "value": getattr(obj,honeypot_ml_result['top_feats'][1])},
-            { "feat": honeypot_ml_result["top_feats"][2], "value": getattr(obj,honeypot_ml_result['top_feats'][2])},
-            { "feat": honeypot_ml_result["top_feats"][3], "value": getattr(obj,honeypot_ml_result['top_feats'][3])},
-            { "feat": honeypot_ml_result["top_feats"][4], "value": getattr(obj,honeypot_ml_result['top_feats'][4])}
+            { "feat": honeypot_ml_result['top_feats'][0], "value": honeypot_ml_result['top_feat_values'][0]},
+            { "feat": honeypot_ml_result["top_feats"][1], "value": honeypot_ml_result['top_feat_values'][1]},
+            { "feat": honeypot_ml_result["top_feats"][2], "value": honeypot_ml_result['top_feat_values'][2]},
+            { "feat": honeypot_ml_result["top_feats"][3], "value": honeypot_ml_result['top_feat_values'][3]},
+            { "feat": honeypot_ml_result["top_feats"][4], "value": honeypot_ml_result['top_feat_values'][4]}
         ]
 
         honeypotDaInsight = {
