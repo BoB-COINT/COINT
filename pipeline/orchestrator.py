@@ -10,8 +10,48 @@ from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
-
 class PipelineOrchestrator:
+    
+    def _reset_pipeline_tables(self) -> None:
+        """
+        Result 테이블을 제외한 중간 테이블 전체 초기화.
+        호출 시점: execute() 맨 앞에서 1번 호출.
+        """
+        from api.models import (
+            AnalysisJob,
+            TokenInfo,
+            PairEvent,
+            HolderInfo,
+            HoneypotDaResult,
+            HoneypotProcessedData,
+            HoneypotMlResult,
+            ExitProcessedDataInstance,
+            ExitProcessedDataStatic,
+            ExitMlResult,
+        )
+
+        logger.info("Resetting pipeline tables (except Result) ...")
+
+        # 잡/메타
+        AnalysisJob.objects.all().delete()
+
+        # 수집 단계
+        TokenInfo.objects.all().delete()
+        PairEvent.objects.all().delete()
+        HolderInfo.objects.all().delete()
+
+        # Honeypot 파이프라인
+        HoneypotDaResult.objects.all().delete()
+        HoneypotProcessedData.objects.all().delete()
+        HoneypotMlResult.objects.all().delete()
+
+        # Exit 파이프라인
+        ExitProcessedDataInstance.objects.all().delete()
+        ExitProcessedDataStatic.objects.all().delete()
+        ExitMlResult.objects.all().delete()
+
+        logger.info("Pipeline tables reset completed.")
+
     """
     Orchestrates the complete analysis pipeline according to workflow design.
 
@@ -66,57 +106,40 @@ class PipelineOrchestrator:
         except Result.DoesNotExist:
             return None
 
-    def execute(self) -> bool:
+    def execute(self, token_addr: str, days: int | None = None) -> bool:
         """
-        Execute complete pipeline for given job.
-
-        Args:
-            job_id: ID of AnalysisJob to process
-
-        Returns:
-            True if successful, False otherwise
+        Execute complete pipeline for given token.
         """
-        from api.models import AnalysisJob
+        # from api.models import AnalysisJob  # 아직 안 쓰면 주석으로만 두기
 
-        # try:
-        #     job = AnalysisJob.objects.get(id=job_id)
-        # except AnalysisJob.DoesNotExist:
-        #     logger.error(f"Job {job_id} not found")
-        #     return False
-
-        # token_addr = job.token_addr
-        token_addr = "0x0368432eF69A2A91B792Be2B10bBb56E3A5C189F"
-        # logger.info(f"Starting pipeline for job {job_id}, token {token_addr}")
+        logger.info(f"Starting pipeline for token {token_addr}")
 
         try:
-            # Step 1: Check if already analyzed
+            # 0) Result 제외 나머지 테이블 초기화
+            self._reset_pipeline_tables()
+
+            # 1) 이미 분석된 토큰인지 확인
             existing_result = self.check_existing_result(token_addr)
             if existing_result:
                 logger.info(f"Token {token_addr} already analyzed, using cached result")
-                # job.status = 'completed'
-                # job.completed_at = timezone.now()
-                # job.current_step = 'Using cached analysis result'
-                # job.save()
                 return True
 
-            # Step 2: Collect token metadata
-            token_info = self._collect_token_info(token_addr,None)
-            # # Step 3: Collect pair events
-            # self._collect_pair_events(job, token_info)
+            # 2) 토큰 메타데이터 수집
+            token_info = self._collect_token_info(token_addr, days)
 
-            # # Step 4: Collect holder information
-            # self._collect_holder_info(job, token_info)
-
-            # Step 6: Run honeypot dynamic analysis
+            # 3) Honeypot DA
             honeypot_da_result = self._run_honeypot_da(token_info)
+
+            # 4) Unformed LP 검사
             is_unformed = self._run_unformed_lp()
 
-            # Step 5: Preprocess data
-            self._preprocess_data(token_info,is_unformed)
+            # 5) 전처리
+            self._preprocess_data(token_info, is_unformed)
 
-            # Step 7: Run honeypot ML analysis
+            # 6) Honeypot ML
             honeypot_ml_result = self._run_honeypot_ml(token_info)
 
+            # 7) Exit ML (Unformed LP면 dummy)
             if not is_unformed:
                 exit_ml_result = self._run_exit_ml(token_info)
             else:
@@ -132,32 +155,22 @@ class PipelineOrchestrator:
                     "price_ratio": None,
                     "time_since_last_mint_sec": None,
                     "liquidity_age_days": None,
-                    "reserve_quote_drawdown_global": None
+                    "reserve_quote_drawdown_global": None,
                 }
 
-            # Step 9: Aggregate results and save
+            # 8) 결과 집계 & 저장
             self._aggregate_and_save_results(
                 token_info,
                 is_unformed,
                 honeypot_da_result,
                 honeypot_ml_result,
-                exit_ml_result
+                exit_ml_result,
             )
 
-            # Mark job as completed
-            # job.status = 'completed'
-            # job.completed_at = timezone.now()
-            # job.current_step = 'Analysis completed successfully'
-            # job.save()
-
-            # logger.info(f"Pipeline completed successfully for job {job_id}")
             return True
 
         except Exception as e:
-            # logger.exception(f"Pipeline failed for job {job_id}: {str(e)}")
-            # job.status = 'failed'
-            # job.error_message = str(e)
-            # job.save()
+            logger.error(f"Pipeline failed for token {token_addr}: {e}")
             return False
 
     def _run_unformed_lp(self):
@@ -376,7 +389,7 @@ class PipelineOrchestrator:
             raise
 
     @classmethod
-    def execute_async(cls):
+    def execute_async(cls, token_addr: str, days: int | None = None):
         """
         Execute pipeline asynchronously.
         TODO: Integrate with Celery for true async execution.
@@ -385,4 +398,4 @@ class PipelineOrchestrator:
             job_id: ID of AnalysisJob to process
         """
         orchestrator = cls()
-        return orchestrator.execute()
+        return orchestrator.execute(token_addr, days)

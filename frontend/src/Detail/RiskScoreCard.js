@@ -11,29 +11,35 @@ function RiskScoreCard({ token }) {
 
     // 위험도 레벨 결정 함수
     const getRiskLevel = () => {
-        const honeypot = scamTypes.find(s => s.type === 'Honeypot')?.percentage || 0;
-        const rugPull = scamTypes.find(s => s.type === 'Rug Pull')?.percentage || 0;
+        const honeypot = scamTypes.find(s => s.type === 'Honeypot')?.percentage ?? 0;
+        const exit = scamTypes.find(s => s.type === 'Exit')?.percentage ?? 0;
 
-        if (honeypot >= 1 && rugPull >= 1) {
-            return { level: 'Critical', color: '#FF4444' };
-        } else if (honeypot === 0 && rugPull >= 1) {
-            return { level: 'Warning', color: '#FF9500' };
-        } else if (honeypot >= 1 && rugPull === 0) {
-            return { level: 'Caution', color: '#FFC107' };
-        } else {
-            return { level: 'Not Detected', color: '#00C853' };
-        }
+        // 어떤 스코어가 더 높은지 먼저 보고, 그 타입 기준으로 구간 적용
+        const isHoneypotMax = honeypot >= exit;
+        const value = isHoneypotMax ? honeypot : exit;
+
+        const ranges = isHoneypotMax
+            ? { safe: 2.00, caution: 48.999999999999977, warning: 97.9 }          // Honeypot
+            : { safe: 2.00, caution: 78.0502200126648, warning: 99.5 };           // Exit
+
+        if (value < ranges.safe)   return { level: 'Safe',     color: '#00C853' };
+        if (value < ranges.caution) return { level: 'Caution',  color: '#FFC107' };
+        if (value < ranges.warning) return { level: 'Warning',  color: '#FF9500' };
+        return { level: 'Critical', color: '#FF4444' };
     };
 
-    // 퍼센티지에 따른 색상 결정 함수
-    const getColorByPercentage = (percentage) => {
-        if (percentage <= 20) {
-            return '#00c853'; // 초록색
-        } else if (percentage <= 60) {
-            return '#FFC107'; // 주황같은 노랑색
-        } else {
-            return '#FF4444'; // 빨간색
-        }
+    // 스코어(0~1)와 타입에 따른 색상 결정
+    const getColorByPercentage = (type, score) => {
+        const value = typeof score === 'number' ? score : 0;
+
+        const ranges = type === 'Honeypot'
+            ? { safe: 2.00, caution: 48.999999999999977, warning: 97.9 }          // Honeypot 구간
+            : { safe: 2.00, caution: 78.0502200126648, warning: 99.5 };           // Exit 구간
+
+        if (value < ranges.safe)   return '#00C853'; // Safe
+        if (value < ranges.caution) return '#FFC107'; // Caution
+        if (value < ranges.warning) return '#FF9500'; // Warning
+        return '#FF4444';                              // Critical
     };
 
     const getOffset = (percentage, circumference) => {
@@ -43,13 +49,12 @@ function RiskScoreCard({ token }) {
     const getLevelColor = (level) => {
         switch(level) {
             case 'Critical': return '#FF4444';
-            case 'Warning': return '#FF9500';
-            case 'Caution': return '#FFC107';
-            case 'Normal': return '#00C853';
-            default: return '#FFFFFF';
+            case 'Warning':  return '#FF9500';
+            case 'Caution':  return '#FFC107';
+            case 'Safe':     return '#00C853';
+            default:         return '#FFFFFF';
         }
     };
-
     const riskLevel = getRiskLevel();
 
     return (
@@ -82,7 +87,7 @@ function RiskScoreCard({ token }) {
                             <path
                                 d={`M 50,130 A ${radius1},${radius1} 0 0,1 210,130`}
                                 fill="none"
-                                stroke={getColorByPercentage(scamTypes[0].percentage)}
+                                stroke={getColorByPercentage(scamTypes[0].type, scamTypes[0].percentage)}
                                 strokeWidth="24"
                                 strokeDasharray={circumference1}
                                 strokeDashoffset={getOffset(scamTypes[0].percentage, circumference1)}
@@ -104,7 +109,7 @@ function RiskScoreCard({ token }) {
                             <path
                                 d={`M 75,130 A ${radius2},${radius2} 0 0,1 185,130`}
                                 fill="none"
-                                stroke={getColorByPercentage(scamTypes[1].percentage)}
+                                stroke={getColorByPercentage(scamTypes[1].type, scamTypes[1].percentage)}
                                 strokeWidth="22"
                                 strokeDasharray={circumference2}
                                 strokeDashoffset={getOffset(scamTypes[1].percentage, circumference2)}
@@ -120,10 +125,15 @@ function RiskScoreCard({ token }) {
                     <div key={index} className="legend-item">
                         <div 
                             className="legend-color-box" 
-                            style={{ backgroundColor: getColorByPercentage(scam.percentage) }}
+                            style={{ backgroundColor: getColorByPercentage(scam.type, scam.percentage) }}
                         />
                         <span className="legend-type">{scam.type}</span>
-                        <span className="legend-percentage">{scam.percentage}%</span>
+                        <span className="legend-percentage">
+                            {typeof scam.percentage === 'number'
+                                ? scam.percentage.toFixed(2)
+                                : scam.percentage}
+                            %
+                        </span>
                     </div>
                 ))}
             </div>

@@ -59,3 +59,8 @@ credentials.json
 modules/honeypot_DA/.build/
 modules/honeypot_DA/build/
 modules/honeypot_DA/reports/
+
+# token dataset 
+testorc_fuzzing.py
+tokens_dataset.txt
+tokens.txt 

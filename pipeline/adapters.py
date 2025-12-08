@@ -818,7 +818,9 @@ class ResultAggregatorAdapter:
             'honeypotDaInsight': honeypotDaInsight
         }
 
-    def save_to_db(self, token_info: 'TokenInfo',is_unformed, aggregated_data: Dict[str, Any]):
+    # adapters.py - ResultAggregatorAdapter.save_to_db 내
+
+    def save_to_db(self, token_info: 'TokenInfo', is_unformed, aggregated_data: Dict[str, Any]):
         """
         Save final result to database.
 
@@ -826,14 +828,45 @@ class ResultAggregatorAdapter:
             token_info: TokenInfo instance
             aggregated_data: Dictionary from aggregate() method
         """
-        from api.models import Result
-        print("test")
+        from api.models import Result, HolderInfo
+
+        # 1) TokenInfo 스냅샷
+        token_snapshot = {
+            "token_addr": token_info.token_addr,
+            "pair_addr": token_info.pair_addr,
+            "pair_type": token_info.pair_type,
+            "pair_creator": token_info.pair_creator,
+            "token_create_ts": token_info.token_create_ts.isoformat() if token_info.token_create_ts else None,
+            "lp_create_ts": token_info.lp_create_ts.isoformat() if token_info.lp_create_ts else None,
+            "symbol": token_info.symbol,
+            "name": token_info.name,
+            "holder_cnt": token_info.holder_cnt,
+        }
+
+        # 2) HolderInfo 스냅샷 (상위 N명만)
+        holders_qs = HolderInfo.objects.filter(token_info=token_info).order_by("-balance")
+        top_holders = [
+            {
+                "rank": idx + 1,
+                "holder_addr": h.holder_addr,
+                "balance": str(h.balance),
+                "rel_to_total": h.rel_to_total,
+            }
+            for idx, h in enumerate(holders_qs[:10])
+        ]
+        holder_snapshot = {
+            "total_holders": holders_qs.count(),
+            "top_holders": top_holders,
+        }
+
         Result.objects.create(
             token_addr=token_info.token_addr,
             is_unformed_lp=is_unformed,
-            risk_score=aggregated_data['risk_score'],
-            scam_types=aggregated_data['scam_types'],
-            exitInsight=aggregated_data['exitInsight'],
-            honeypotMlInsight=aggregated_data['honeypotMlInsight'],
-            honeypotDaInsight=aggregated_data['honeypotDaInsight']
+            risk_score=aggregated_data["risk_score"],
+            scam_types=aggregated_data["scam_types"],
+            exitInsight=aggregated_data["exitInsight"],
+            honeypotMlInsight=aggregated_data["honeypotMlInsight"],
+            honeypotDaInsight=aggregated_data["honeypotDaInsight"],
+            token_snapshot=token_snapshot,
+            holder_snapshot=holder_snapshot,
         )

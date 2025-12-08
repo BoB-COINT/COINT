@@ -19,11 +19,15 @@ import time
 import psutil
 from web3 import Web3
 import django
+from web3.exceptions import BlockNotFound
 
 django_project_path = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(django_project_path))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Import scenario modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -223,7 +227,14 @@ class ScamAnalyzer:
         self.quote_token = None
         self.quote_token_decimals = 18
         self.eth_usd_price = None  # cached 1 WETH -> USD estimate
-        self.gaslimit = web3.eth.get_block(blocknum)["gasLimit"]
+
+        try:
+            block = web3.eth.get_block(blocknum)
+        except BlockNotFound:
+            # 현재 dev 네트워크에 해당 블록이 없으면 latest 블록으로 대체
+            block = web3.eth.get_block("latest")
+        self.gaslimit = block["gasLimit"]
+        
         self.holders = holders or []
 
         if results is not None:
@@ -1171,30 +1182,11 @@ def main():
 
         # 기존 연결/프로세스 정리
         if network.is_connected():
-            print("network already")
-            network.disconnect()
-
-        if network.rpc.is_active():
-            print("rpc already")
-            network.rpc.kill()
-
-        # anvil 중복 프로세스 정리
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            cmd = " ".join(proc.info.get('cmdline') or []).lower()
-            if "anvil" in cmd:
-                print(f"💀 Killing old RPC process: {proc.pid}")
-                proc.kill()
+            # 다른 네트워크에 붙어 있으면 끊고 다시 붙게
+            if network.show_active() != "development":
+                network.disconnect()
 
         # anvil 실행
-        network.rpc.launch(
-            cmd=(
-                f"anvil --fork-url={fork_url} "
-                f"--fork-block-number={block_number} "
-                f"--accounts=10 --hardfork=cancun --no-storage-caching"
-            )
-        )
-
-        time.sleep(2)
         if not network.is_connected():
             network.connect("development")
 
@@ -1250,18 +1242,11 @@ def main():
         sys.exit(1)
 
     finally:
-        # 정상/예외 상관없이 항상 RPC 정리
         try:
             if network.is_connected():
                 network.disconnect()
         except Exception as e:
             print(f"⚠️  네트워크 연결 해제 중 오류: {e}")
-
-        try:
-            if network.rpc.is_active():
-                network.rpc.kill()
-        except Exception as e:
-            print(f"⚠️  RPC 종료 중 오류: {e}")
 
         time.sleep(1)
 

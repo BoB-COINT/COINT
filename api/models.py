@@ -146,12 +146,11 @@ class Result(models.Model):
         max_length=42,
         unique=True,
         db_index=True,
-        help_text="Analyzed token contract address"
+        help_text="Analyzed token contract address",
     )
-
     created_at = models.DateTimeField(
         default=timezone.now,
-        help_text="Analysis completion timestamp"
+        help_text="Analysis completion timestamp",
     )
 
     is_unformed_lp = models.IntegerField(
@@ -175,6 +174,20 @@ class Result(models.Model):
     )
 
     honeypotDaInsight = models.JSONField(
+    )
+
+        # 🔹 분석 시점 TokenInfo 스냅샷
+    token_snapshot = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Snapshot of TokenInfo at analysis time (symbol, name, pair_addr, holder_cnt ...)",
+    )
+
+    # 🔹 분석 시점 HolderInfo 요약 스냅샷
+    holder_snapshot = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Snapshot of holders at analysis time (total_holders, top holders, etc.)",
     )
 
     class Meta:
