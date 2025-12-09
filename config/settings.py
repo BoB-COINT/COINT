@@ -29,8 +29,8 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    ".ngrok-free.dev",      # ngrok
-    ".vercel.app",          # Vercel 프론트에서 직접 API 부를 때
+    "3.106.16.188",      # ngrok
+    "coint-bob.vercel.app",          # Vercel 프론트에서 직접 API 부를 때
 ]
 
 

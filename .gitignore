@@ -70,3 +70,5 @@ frontend/
 Dockerfile
 coint-backend.tar
 tokens_dataset_10.txt
+
+deploy/
