@@ -64,3 +64,9 @@ modules/honeypot_DA/reports/
 testorc_fuzzing.py
 tokens_dataset.txt
 tokens.txt 
+frontend/
+
+.dockerignore
+Dockerfile
+coint-backend.tar
+tokens_dataset_10.txt

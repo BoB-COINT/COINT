@@ -115,14 +115,14 @@ class PipelineOrchestrator:
         logger.info(f"Starting pipeline for token {token_addr}")
 
         try:
-            # 0) Result 제외 나머지 테이블 초기화
-            self._reset_pipeline_tables()
-
             # 1) 이미 분석된 토큰인지 확인
             existing_result = self.check_existing_result(token_addr)
             if existing_result:
                 logger.info(f"Token {token_addr} already analyzed, using cached result")
                 return True
+
+            # 0) Result 제외 나머지 테이블 초기화
+            self._reset_pipeline_tables()
 
             # 2) 토큰 메타데이터 수집
             token_info = self._collect_token_info(token_addr, days)
@@ -180,34 +180,27 @@ class PipelineOrchestrator:
 
         return is_unformed
     
-    def _collect_token_info(self,token_addr, days) -> 'TokenInfo':
-        """
-        Step 2: Collect token metadata and create TokenInfo record.
-        """
-        # job.status = 'collecting_token'
-        # job.current_step = 'Collecting token metadata from blockchain'
-        # job.save()
-
+    def _collect_token_info(self, token_addr, days) -> 'TokenInfo':
         logger.info(f"Collecting token info for {token_addr}")
 
         try:
-            # Call module to collect data
-            token_data = self.token_collector.collect_all(token_addr,days)
-
-            # Save to database
+            token_data = self.token_collector.collect_all(token_addr, days)
             token_info = self.token_collector.save_to_db(token_data)
-
-            # Link job to token_info
-            # job.token_info = token_info
-            # job.save()
-
             logger.info(f"Token info collected, token_addr_idx={token_info.id}")
             return token_info
 
+        except KeyError as e:
+            # LP가 없을 때 'pair_creator' KeyError 나오는 케이스 방어
+            if str(e) == "'pair_creator'":
+                logger.error(f"No pair found for token {token_addr} (missing pair_creator)")
+            else:
+                logger.error(f"Failed to collect token info (KeyError): {e}")
+            raise
+
         except Exception as e:
-            # job.error_step = 'collecting_token'
             logger.error(f"Failed to collect token info: {e}")
             raise
+
 
     # def _collect_pair_events(self, job: 'AnalysisJob', token_info: 'TokenInfo'):
     #     """
