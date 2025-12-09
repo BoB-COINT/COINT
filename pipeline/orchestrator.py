@@ -18,7 +18,6 @@ class PipelineOrchestrator:
         호출 시점: execute() 맨 앞에서 1번 호출.
         """
         from api.models import (
-            AnalysisJob,
             TokenInfo,
             PairEvent,
             HolderInfo,
@@ -31,9 +30,6 @@ class PipelineOrchestrator:
         )
 
         logger.info("Resetting pipeline tables (except Result) ...")
-
-        # 잡/메타
-        AnalysisJob.objects.all().delete()
 
         # 수집 단계
         TokenInfo.objects.all().delete()
@@ -132,16 +128,16 @@ class PipelineOrchestrator:
 
             # 4) Unformed LP 검사
             is_unformed = self._run_unformed_lp()
-
+            
             # 5) 전처리
             self._preprocess_data(token_info, is_unformed)
 
             # 6) Honeypot ML
-            honeypot_ml_result = self._run_honeypot_ml(token_info)
 
             # 7) Exit ML (Unformed LP면 dummy)
             if not is_unformed:
                 exit_ml_result = self._run_exit_ml(token_info)
+                honeypot_ml_result = self._run_honeypot_ml(token_info)
             else:
                 exit_ml_result = {
                     "token_addr": token_addr,
@@ -157,6 +153,16 @@ class PipelineOrchestrator:
                     "liquidity_age_days": None,
                     "reserve_quote_drawdown_global": None,
                 }
+                honeypot_ml_result = {
+                    "is_honeypot": None,
+                    "probability": None,
+                    "risk_level": None,
+                    "threshold": None,
+                    "top_feats": [None,None,None,None,None],
+                    "top_feat_values": [None,None,None,None,None],  # 🔹 새로 추가
+                    "status": None
+                }
+                self.honeypot_ml._save_to_db(token_info,honeypot_ml_result)
 
             # 8) 결과 집계 & 저장
             self._aggregate_and_save_results(

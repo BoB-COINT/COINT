@@ -158,6 +158,7 @@ class Result(models.Model):
     )
 
     risk_score = models.JSONField(
+        null=True,
         help_text="Final scam score calculated after analysis"
     )
 
@@ -630,11 +631,13 @@ class HoneypotMlResult(models.Model):
 
     # y_pred (0/1) → is_honeypot
     is_honeypot = models.BooleanField(
+        null=True,
         help_text="Honeypot prediction result (y_pred)"
     )
 
     # y_proba → probability
     probability = models.FloatField(
+        null=True,
         help_text="Honeypot probability (y_proba, 0-1)"
     )
 
@@ -719,6 +722,7 @@ class HoneypotMlResult(models.Model):
 
     status = models.CharField(
         max_length=20,
+        null=True,
         default="PRED_ONLY",
         help_text="Result status (e.g., PRED_ONLY)",
     )

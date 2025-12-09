@@ -746,10 +746,16 @@ class ResultAggregatorAdapter:
         honeypot_score = honeypot_ml_result.get("probability")
         exit_score = exit_ml_result.get("probability")
 
-        risk_score["honeypot"] = honeypot_score
-        risk_score["exit"] = exit_score
+        if is_unformed:
+            risk_score["honeypot"] = None
+            risk_score["exit"] = None
+        else:
+            risk_score["honeypot"] = honeypot_score
+            risk_score["exit"] = exit_score
 
-        if honeypot_score <= 0.02:
+        if is_unformed:
+            honeypot_type['level'] = "no_market"
+        elif honeypot_score <= 0.02:
             honeypot_type['level'] = "Safe"
         elif honeypot_score <= 0.48999999999999977:
             honeypot_type['level'] = "Caution"
