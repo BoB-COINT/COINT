@@ -98,18 +98,21 @@ class DataCollectorAdapter:
 
         # 1. Save TokenInfo
         token_info_data = data['token_info']
-        token_info = TokenInfo.objects.create(
-            token_addr=token_info_data['token_addr'],
-            pair_addr=token_info_data['pair_addr'],
-            pair_creator=token_info_data['pair_creator'],
-            token_create_ts=token_info_data['token_create_ts'],
-            lp_create_ts=token_info_data['lp_create_ts'],
-            pair_idx=token_info_data['pair_idx'],
-            pair_type=token_info_data['pair_type'],
-            token_creator_addr=token_info_data['token_creator_addr'],
-            symbol=token_info_data.get('symbol'),
-            name=token_info_data.get('name'),
-            holder_cnt=token_info_data.get('holder_cnt')
+
+        token_info, created = TokenInfo.objects.update_or_create(
+            token_addr=token_info_data['token_addr'],   # ✅ UNIQUE 키 기준
+            defaults={
+                "pair_addr": token_info_data['pair_addr'],
+                "pair_creator": token_info_data['pair_creator'],
+                "token_create_ts": token_info_data['token_create_ts'],
+                "lp_create_ts": token_info_data['lp_create_ts'],
+                "pair_idx": token_info_data['pair_idx'],
+                "pair_type": token_info_data['pair_type'],
+                "token_creator_addr": token_info_data['token_creator_addr'],
+                "symbol": token_info_data.get("symbol"),
+                "name": token_info_data.get("name"),
+                "holder_cnt": token_info_data.get("holder_cnt"),
+            },
         )
 
         # 2. Save PairEvents (bulk)

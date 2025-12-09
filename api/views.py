@@ -68,19 +68,26 @@ def result_detail(request, token_addr: str):
     }
     return JsonResponse(data)
 
-@api_view(['POST'])
-def analyze_token(request):
+@api_view(['POST', 'OPTIONS'])
+def analyze_token_view(request):
     """
-    새 token_addr를 받아서 전체 파이프라인 실행 후 Result 반환.
+    POST token_addr → 전체 파이프라인 실행
     """
+    print("REQUEST BODY RAW:", request.body)
+    print("PARSED DATA:", request.data)
+
+    if request.method == "OPTIONS":
+        # CORS preflight용 – DRF가 자동으로 처리하긴 하지만,
+        # 명시적으로 200 돌려주면 깔끔함
+        return Response(status=status.HTTP_200_OK)
+
     token_addr = request.data.get("token_addr")
     if not token_addr:
-        return Response({"detail": "token_addr is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "token_addr is required"},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    # 1) 이미 결과 있으면 재사용
     existing = Result.objects.filter(token_addr__iexact=token_addr).first()
     if existing:
-        # 바로 기존 결과 JSON 리턴 (result_detail과 동일 포맷)
         return Response({
             "token_addr": existing.token_addr,
             "riskScore": existing.risk_score,
@@ -92,13 +99,12 @@ def analyze_token(request):
             "honeypotDaInsight": existing.honeypotDaInsight,
         })
 
-    # 2) 없으면 오케스트레이터 실행
     orch = PipelineOrchestrator()
     ok = orch.execute(token_addr)
     if not ok:
-        return Response({"detail": "pipeline failed"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"detail": "pipeline failed"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # 3) 실행 후 Result 다시 조회해서 리턴
     result = Result.objects.get(token_addr__iexact=token_addr)
     return Response({
         "token_addr": result.token_addr,

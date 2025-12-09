@@ -1161,15 +1161,21 @@ def main():
         pair_creator = token_info_obj.pair_creator
         token_address = token_info_obj.token_addr
 
-        holder_entries = [
-            {
+        raw_holders = HolderInfo.objects.filter(token_info=token_info_obj)\
+                                        .order_by("-balance")[:20]
+
+        holder_entries = []
+        for h in raw_holders:
+            try:
+                bal = float(h.balance)  # 숫자인지 먼저 체크
+            except Exception:
+                bal = 0.0               # 문제 있는 값은 0으로 대체
+
+            holder_entries.append({
                 "holder_address": h.holder_addr,
-                "balance_decimal": str(h.balance),
+                "balance_decimal": str(bal),
                 "relative_share": h.rel_to_total,
-            }
-            for h in HolderInfo.objects.filter(token_info=token_info_obj)
-                                       .order_by("-balance")[:20]
-        ]
+            })
 
         # Validation
         if not token_address:

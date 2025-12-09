@@ -72,17 +72,17 @@ djangorestframework==3.16.1
 python-decouple==3.8
 sqlparse==0.5.3
 
-# ML dependencies for honeypot_ML
-# XGBoost 1.7.6 required (2.0.0+ has compatibility issues with feature contributions)
+# ML for honeypot_ML
 xgboost==1.7.6
 pandas==2.2.3
 numpy==1.26.4
 scikit-learn==1.5.2
 
-# ML dependencies for exit_ML (attention-based MIL model)
-torch==2.9.1
+# ML for exit_ML (attention MIL model)
+torch==2.9.1+cpu
 python-dateutil==2.9.0.post0
+--extra-index-url https://download.pytorch.org/whl/cpu
 
-# Data collection dependencies
+# Data collection
 web3==6.20.0
 requests==2.32.3

@@ -393,6 +393,9 @@ class ExitInstancePreprocessor:
             row["recent_burn_ratio_last10"] = recent_burn10
             row["recent_burn_ratio_last20"] = recent_burn20
             row["reserve_quote_drawdown"] = drawdown_val
+            
+        if row.get("reserve_quote") is None:
+            row["reserve_quote"] = 0.0
 
             # Mask columns as in v3_2
             def add_mask(field: str, mask: str, transform=None):
