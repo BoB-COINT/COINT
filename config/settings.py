@@ -29,8 +29,7 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    ".ngrok-free.dev",      # ngrok
-    ".vercel.app",          # Vercel 프론트에서 직접 API 부를 때
+    "bob-coint.site",      # ngrok
 ]
 
 
@@ -178,15 +177,18 @@ LOGGING = {
 
 # CORS settings for frontend integration
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',  # React development server
+    'http://localhost:3000',
     'http://127.0.0.1:3000',
-    "https://coint-bob.vercel.app",
-    "https://nonexciting-erodible-renate.ngrok-free.dev",
+    'http://bob-coint.site',
+    'https://bob-coint.site',
+    'http://www.bob-coint.site',
+    'https://www.bob-coint.site'
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "https://*.ngrok-free.dev",
-    "https://coint-bob.vercel.app",
+    "https://bob-coint.site",
+    "http://bob-coint.site"
 ]
 
 
