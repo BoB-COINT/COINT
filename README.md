@@ -12,19 +12,30 @@ COINT는 3가지 ML 기반 탐지 모듈을 통합한 토큰 스캠 분석 시�
 
 ## Setup
 
+### Production (WSL)
 ```bash
-# Create virtual environment
-python3.13 -m venv venv
+# Install system dependencies
+sudo apt update
+sudo apt install nginx python3-pip
+
+# Setup virtual environment
+cd /mnt/c/Users/i_jon/OneDrive/Desktop/COINT
+python3 -m venv venv
 source venv/bin/activate
 
-# Install dependencies
+# Install Python dependencies
 pip install -r requirements.txt
+pip install gunicorn
 
 # Run migrations
 python manage.py migrate
 
-# Run server
-python manage.py runserver
+# Setup systemd service
+sudo systemctl start gunicorn
+sudo systemctl enable gunicorn
+
+# Configure nginx
+sudo service nginx start
 ```
 
 ## Environment Variables
@@ -38,6 +49,8 @@ DEBUG=True
 ETHEREUM_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
 ETHERSCAN_API_KEY=YOUR_ETHERSCAN_API_KEY
 ETHERSCAN_API_URL=https://api.etherscan.io/v2/api
+MORALIS_API_KEY=YOUR_MORALIS_API_KEY
+CHAINBASE_API_KEY=YOUR_CHAINBASE_API_KEY
 ```
 
 ## Project Structure
@@ -45,8 +58,9 @@ ETHERSCAN_API_URL=https://api.etherscan.io/v2/api
 ```
 api/                    Django app (models, views, serializers)
 ├── models.py          Database schema (11 tables)
-├── migrations/        DB migrations (0001~0005)
-└── serializers.py     REST API serializers
+├── views.py           REST API endpoints
+├── serializers.py     DRF serializers
+└── migrations/        DB migrations
 
 pipeline/              Analysis pipeline orchestration
 ├── adapters.py        Module integration adapters
@@ -57,10 +71,10 @@ modules/               Analysis modules
 ├── honeypot_DA/       Dynamic analysis (Brownie-based)
 ├── honeypot_ML/       ML-based honeypot detection (XGBoost)
 ├── exit_ML/           Exit scam detection (Attention MIL)
-└── preprocessor/      Feature engineering (TBD)
+├── preprocessor/      Feature engineering
+└── detect_unformed_lp/ Unformed LP detection
 
 config/                Django settings
-frontend/              React frontend (separate repository)
 ```
 
 ## Database Schema
@@ -72,9 +86,10 @@ frontend/              React frontend (separate repository)
 - `pair_evt`: 페어 이벤트 로그 (Mint, Burn, Swap, Sync)
 - `holder_info`: 토큰 홀더 정보
 
-### Processed Data (2 tables)
-- `honeypot_processed_data`: Honeypot 탐지 피처 (23개)
-- `exit_processed_data`: Exit scam 탐지 피처 (52개, 5초 윈도우)
+### Processed Data (3 tables)
+- `honeypot_processed_data`: Honeypot 탐지 피처 (67개)
+- `exit_processed_data_instance`: Exit scam 인스턴스 피처 (5초 윈도우)
+- `exit_processed_data_static`: Exit scam 정적 피처
 
 ### Analysis Results (5 tables)
 - `honeypot_da_result`: 동적 분석 결과
@@ -86,35 +101,42 @@ frontend/              React frontend (separate repository)
 ### Final Output (1 table)
 - `result`: 통합 분석 결과 및 리스크 스코어
 
-## Integration Status
+## Deployment
 
-### ✅ Completed
-- Database schema design and migrations
-- UnifiedDataCollector (token/pair/holder data collection)
-- HoneypotDAAnalyzerAdapter (8 test scenarios)
-- HoneypotMLAnalyzerAdapter (XGBoost v8, threshold 0.64)
-- ExitMLAnalyzerAdapter (Attention MIL model)
-- Environment variable management (.env, settings.py)
+### Production Server
+- **Domain**: bob-coint.site
+- **Backend**: WSL + Gunicorn + Nginx
+- **Frontend**: React (port 3000)
+- **Database**: SQLite (production)
 
-### 🚧 In Progress
-- Preprocessor module (feature engineering)
-- API endpoints (REST API)
-- Pipeline orchestrator
+### Access
+- Frontend: http://bob-coint.site
+- API: http://bob-coint.site/api/
 
-### 📋 Planned
-- Frontend integration
-- Real-time monitoring
-- Result caching and optimization
+### Services
+```bash
+# Gunicorn service
+sudo systemctl status gunicorn
+sudo systemctl restart gunicorn
+
+# Nginx
+sudo service nginx status
+sudo service nginx reload
+```
 
 ## Technologies
 
 **Backend:**
 - Django 5.2.7 + Django REST Framework
-- PostgreSQL (production) / SQLite (development)
+- SQLite (production & development)
+- Gunicorn (WSGI server)
+- Nginx (reverse proxy)
 
 **Blockchain:**
 - Web3.py 6.20.0 (Ethereum interaction)
-- Etherscan API v2 (data collection)
+- Etherscan API v2
+- Moralis API
+- Chainbase API
 - Brownie (smart contract testing)
 
 **Machine Learning:**
@@ -123,22 +145,56 @@ frontend/              React frontend (separate repository)
 - Pandas, NumPy, scikit-learn
 
 **Frontend:**
-- React (separate repository)
+- React 18
+- Environment: Development server (port 3000)
 
-## API Usage (WIP)
+**Infrastructure:**
+- WSL (Ubuntu)
+- Port forwarding (80, 443)
+- Domain: bob-coint.site
+
+## API Usage
+
+### REST API Endpoints
+
+**Create Analysis Job:**
+```bash
+POST /api/jobs/
+Content-Type: application/json
+
+{
+  "token_addr": "0x...",
+  "days": 30  # optional, analysis period in days
+}
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "token_addr": "0x...",
+  "status": "pending",
+  "created_at": "2025-12-10T12:00:00Z"
+}
+```
+
+**Get Job Status:**
+```bash
+GET /api/jobs/{id}/
+```
+
+### Python API (Internal)
 
 ```python
-from pipeline.adapters import DataCollectorAdapter
+from pipeline.orchestrator import PipelineOrchestrator
 
-# Collect blockchain data
-collector = DataCollectorAdapter()
-data = collector.collect_all("0x...")  # token address
-token_info = collector.save_to_db(data)
+# Run complete analysis
+orchestrator = PipelineOrchestrator()
+success = orchestrator.execute(token_addr="0x...", days=30)
 
-# Run analysis (after preprocessor integration)
-# from pipeline.orchestrator import AnalysisPipeline
-# pipeline = AnalysisPipeline()
-# result = pipeline.analyze(token_addr="0x...")
+# Check cached result
+from api.models import Result
+result = Result.objects.get(token_addr__iexact="0x...")
 ```
 
 ## Development

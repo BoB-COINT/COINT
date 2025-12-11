@@ -222,7 +222,7 @@ class UnifiedDataCollector:
                             'tx_hash': tx_hash,
                             'tx_from': tx_from,
                             'tx_to': tx_to,
-                            'evt_idx': int(log['logIndex'],16),
+                            'evt_idx': int(log['logIndex'], 16) if log['logIndex'] != '0x' else 0,
                             'evt_type': 'PairCreated',
                             'evt_log': evt_log,
                             'lp_total_supply': 0

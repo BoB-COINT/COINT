@@ -19,11 +19,15 @@ import time
 import psutil
 from web3 import Web3
 import django
+from web3.exceptions import BlockNotFound
 
 django_project_path = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(django_project_path))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Import scenario modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -223,7 +227,14 @@ class ScamAnalyzer:
         self.quote_token = None
         self.quote_token_decimals = 18
         self.eth_usd_price = None  # cached 1 WETH -> USD estimate
-        self.gaslimit = web3.eth.get_block(blocknum)["gasLimit"]
+
+        try:
+            block = web3.eth.get_block(blocknum)
+        except BlockNotFound:
+            # 현재 dev 네트워크에 해당 블록이 없으면 latest 블록으로 대체
+            block = web3.eth.get_block("latest")
+        self.gaslimit = block["gasLimit"]
+        
         self.holders = holders or []
 
         if results is not None:
@@ -1115,16 +1126,13 @@ def main():
     from api.models import HolderInfo, TokenInfo
 
     network.rpc._revert_trace = False
-    # w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
-
-    skip_flag = False
 
     if len(sys.argv) < 2:
         print("Usage: scam_analyzer.py <token_addr_idx>")
         return
     token_addr_idx = int(sys.argv[1])
 
-    # Load token info from database
+    # TokenInfo 로드
     try:
         token_info_obj = TokenInfo.objects.get(id=token_addr_idx)
     except TokenInfo.DoesNotExist:
@@ -1133,124 +1141,115 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"분석 시작: Token #{token_addr_idx}")
-    print(f"{'='*60}\n") 
-    
+    print(f"{'='*60}\n")
+
     fork_url = os.environ.get("ETHEREUM_RPC_URL")
+    if not fork_url:
+        print("Error: ETHEREUM_RPC_URL not set in environment")
+        return
+
     w3 = Web3(Web3.HTTPProvider(fork_url))
     block_number = w3.eth.block_number
 
+    detector = None
+
     try:
-        # .env에서 토큰 주소, fork url 읽기
+        # 기본 정보
         service_input = token_info_obj.pair_type
         token_idx = token_info_obj.id
         pair_addr = token_info_obj.pair_addr
-        # block_number = w3.eth.block_number
-
         pair_creator = token_info_obj.pair_creator
         token_address = token_info_obj.token_addr
+
         holder_entries = [
             {
                 "holder_address": h.holder_addr,
                 "balance_decimal": str(h.balance),
                 "relative_share": h.rel_to_total,
             }
-            for h in HolderInfo.objects.filter(token_info=token_info_obj).order_by("-balance")[:20]
+            for h in HolderInfo.objects.filter(token_info=token_info_obj)
+                                       .order_by("-balance")[:20]
         ]
-    
-        # Validation: 필수 정보 체크
+
+        # Validation
         if not token_address:
-            print(f"Error: Token address is empty")
+            print("Error: Token address is empty")
             return
 
         if block_number is None:
-            print(f"Error: Block number not found")
+            print("Error: Block number not found")
             return
 
-        if not fork_url:
-            print(f"Error: ALCHEMY_URL not set")
-            
-        try:
-            # for step in range(len(blocknum_list)):
-            if network.is_connected():
-                print('network already')
+        # 기존 연결/프로세스 정리
+        if network.is_connected():
+            # 다른 네트워크에 붙어 있으면 끊고 다시 붙게
+            if network.show_active() != "development":
                 network.disconnect()
-            # fork to certain block number
-            if network.rpc.is_active():
-                print("rpc already")
-                network.rpc.kill()
-            
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                cmd = " ".join(proc.info['cmdline']).lower()
-                if "anvil" in cmd:
-                    print(f"💀 Killing old RPC process: {proc.pid}")
-                    proc.kill()
 
-            network.rpc.launch(
-                cmd=f"anvil --fork-url={fork_url} --fork-block-number={block_number} --accounts=10 --hardfork=cancun --no-storage-caching"
-            )
+        # anvil 실행
+        if not network.is_connected():
+            network.connect("development")
 
-            time.sleep(2)
-            if not network.is_connected():
-                network.connect("development")
-            try:
-                wait_for_rpc_ready(timeout=60)
-            except Exception as exc:
-                print(f"[warn] RPC readiness check failed: {exc}")
-            # Expand HTTP RPC timeout to survive heavy traces
-            set_rpc_timeout(seconds=120)
-            print("Anvil accounts:", web3.eth.accounts)
+        try:
+            wait_for_rpc_ready(timeout=60)
+        except Exception as exc:
+            print(f"[warn] RPC readiness check failed: {exc}")
 
-            print(f"\n{'='*60}")
-            print(f"현재 네트워크: {network.show_active()}")
-            print(f"블록 번호: {chain.height}")
-            print(f"인덱스 번호: {token_idx}")
-            print(f"{'='*60}")
+        # RPC timeout 확장
+        set_rpc_timeout(seconds=120)
+        print("Anvil accounts:", web3.eth.accounts)
 
-            # gas configuration
-            gas_price("1000 gwei")
+        print(f"\n{'='*60}")
+        print(f"현재 네트워크: {network.show_active()}")
+        print(f"블록 번호: {chain.height}")
+        print(f"인덱스 번호: {token_idx}")
+        print(f"{'='*60}")
 
-            # run analyzer
-            print(f"\n{'#'*60}")
-            print(f"# 검사 시작: {token_address}")
-            print(f"{'#'*60}")
+        # gas configuration
+        gas_price("1000 gwei")
 
-            detector = ScamAnalyzer(
-                token_address,
-                token_idx,
-                service_input,
-                block_number,
-                pair_addr,
-                pair_creator,
-                holders=holder_entries,
-            )
-            results = detector.run_tests()
+        # run analyzer
+        print(f"\n{'#'*60}")
+        print(f"# 검사 시작: {token_address}")
+        print(f"{'#'*60}")
 
+        detector = ScamAnalyzer(
+            token_address,
+            token_idx,
+            service_input,
+            block_number,
+            pair_addr,
+            pair_creator,
+            holders=holder_entries,
+        )
 
-        except Exception as e:
-            print(f"\n{'='*60}")
-            print(f"❌ 토큰 #{token_idx} ({token_address}) 처리 중 오류 발생")
-            print(f"❌ 오류: {str(e)}")
-            print(f"{'='*60}\n")
-        
-        # save results
+        results = detector.run_tests()
+
+        # ✅ 여기까지 왔다 = 정상 수행 → JSON 저장
         filepath = detector.save_results()
         print(f"📄 상세 결과: {filepath}")
         print(f"{'='*60}\n")
 
+    except Exception as e:
+        # 여기서 에러 전체 스택을 stderr로 보내주면
+        # adapters.py에서 RuntimeError로 잘 잡힘
+        import traceback
+        print(f"\n{'='*60}")
+        print(f"❌ 토큰 #{token_addr_idx} ({token_info_obj.token_addr}) 처리 중 오류 발생")
+        print(f"❌ 오류: {str(e)}")
+        traceback.print_exc()
+        print(f"{'='*60}\n")
+        sys.exit(1)
+
     finally:
-        # 정상/예외 상관없이 항상 RPC 정리
         try:
             if network.is_connected():
                 network.disconnect()
         except Exception as e:
             print(f"⚠️  네트워크 연결 해제 중 오류: {e}")
 
-        try:
-            if network.rpc.is_active():
-                network.rpc.kill()
-        except Exception as e:
-            print(f"⚠️  RPC 종료 중 오류: {e}")
-
         time.sleep(1)
+
+
 if __name__ == "__main__":
     main()

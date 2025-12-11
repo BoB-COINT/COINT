@@ -13,6 +13,7 @@ venv/
 env/
 ENV/
 .venv
+node_modules/
 
 # Django
 *.log
@@ -58,3 +59,14 @@ credentials.json
 modules/honeypot_DA/.build/
 modules/honeypot_DA/build/
 modules/honeypot_DA/reports/
+
+# token dataset 
+testorc_fuzzing.py
+tokens_dataset.txt
+tokens.txt 
+frontend/
+
+.dockerignore
+Dockerfile
+coint-backend.tar
+tokens_dataset_10.txt

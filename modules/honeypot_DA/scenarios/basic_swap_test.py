@@ -9,6 +9,9 @@ from decimal import Decimal
 from brownie import accounts, chain, Contract, network,web3
 from brownie.exceptions import VirtualMachineError
 
+from utils.tx_helpers import safe_transact
+from web3.exceptions import BlockNotFound
+
 TRADE_RATIOS = {
     "SMALL": Decimal("0.005"),  # 0.5%
     "MEDIUM": Decimal("0.02"),  # 2%
@@ -22,7 +25,17 @@ def run_scenario(detector):
     """Execute swap scenarios based on the current pool state."""
     results = []
     block_num = detector.blocknum
-    block_gas_limit = web3.eth.get_block(block_num)["gasLimit"]
+    if isinstance(block_num, str) and block_num.startswith("0x"):
+        try:
+            block_num = int(block_num, 16)
+        except ValueError:
+            block_num = "latest"
+
+    try:
+        block_gas_limit = web3.eth.get_block(block_num)["gasLimit"]
+    except BlockNotFound:
+        # 현재 네트워크에 해당 블록 없으면 latest 블록으로 대체
+        block_gas_limit = web3.eth.get_block("latest")["gasLimit"]
     quote_addr = detector.quote_token_address or detector.weth.address
     quote_symbol, quote_decimals = identify_quote(detector, quote_addr)
     token_decimals = detector.results.get("token_info", {}).get("decimals", 18)
@@ -64,7 +77,11 @@ def prepare_account_quote(detector, account, quote_addr, quote_symbol,block_gas_
     eth_amount_wei = to_wei(BASE_ETH_DEPOSIT)
     print(f"\n--- initialise account {account.address} ---")
     print(f"  deposit ETH: {BASE_ETH_DEPOSIT:.6f}")
-    detector.weth.deposit({"from": account, "value": eth_amount_wei, 'gas_limit':block_gas_limit})
+    # detector.weth.deposit({"from": account, "value": eth_amount_wei, 'gas_limit':block_gas_limit})
+    safe_transact(
+        detector.weth.deposit,
+        {"from": account, "value": eth_amount_wei, "gas_limit": block_gas_limit},
+    )
 
     deadline = chain.time() + 300
 

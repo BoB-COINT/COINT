@@ -2,6 +2,8 @@ import json, time
 from web3 import Web3
 from brownie import network, accounts, Contract,chain,web3
 import brownie.network.state as state
+from utils.tx_helpers import safe_transact
+from web3.exceptions import BlockNotFound
 
 RPC_URL = "http://127.0.0.1:8545"
 TEST_AMOUNT = 1_000_000_000_000
@@ -28,7 +30,17 @@ def hex_topic(text_sig):
 
 def run_scenario(self):
     block_num = self.blocknum
-    block_gas_limit = web3.eth.get_block(block_num)["gasLimit"]
+    if isinstance(block_num, str) and block_num.startswith("0x"):
+        try:
+            block_num = int(block_num, 16)
+        except ValueError:
+            block_num = "latest"
+
+    try:
+        block_gas_limit = web3.eth.get_block(block_num)["gasLimit"]
+    except BlockNotFound:
+        # 현재 네트워크에 해당 블록이 없으면 latest로 대체
+        block_gas_limit = web3.eth.get_block("latest")["gasLimit"]
     network.gas_limit(self.gaslimit)
     abi_funclist = {
         "address_uint256":[],

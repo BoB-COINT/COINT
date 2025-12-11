@@ -6,8 +6,6 @@ Reads preprocessed features from:
   - ExitProcessedDataStatic (per-token)
 Applies attention MIL model artifacts in this directory and saves results to:
   - ExitMlResult
-  - ExitMlDetectTransaction (top-1)
-  - ExitMlDetectStatic
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import math
 import numpy as np
 import pandas as pd
 import torch
@@ -176,8 +175,6 @@ def run_exit_detection(token_info_id: int) -> Dict[str, object]:
         ExitProcessedDataInstance,
         ExitProcessedDataStatic,
         ExitMlResult,
-        ExitMlDetectTransaction,
-        ExitMlDetectStatic,
         TokenInfo,
     )
 
@@ -286,7 +283,10 @@ def run_exit_detection(token_info_id: int) -> Dict[str, object]:
         for name in INSTANCE_OUTPUT_FEATURES:
             if name in df_feat.columns:
                 col_idx = df_feat.columns.get_loc(name)
-                feat_vals[name] = float(X[pos, col_idx])
+                val = float(X[pos, col_idx])
+                if name in {"reserve_quote", "price_ratio", "time_since_last_mint_sec"}:
+                    val = math.expm1(val)
+                feat_vals[name] = val
         instance_record = {"timestamp": ts, "tx_hash": txh, "feature_values": feat_vals}
 
     static_record = {}

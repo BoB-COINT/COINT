@@ -21,11 +21,11 @@ print("   삭제 완료!")
 # 데이터 수집
 collector = DataCollectorAdapter()
 analyzer = HoneypotDynamicAnalyzerAdapter()
-token_addr = "0x8cF091eDAC829CdF4e89d8292C19e2cf7B6A45eE"
+token_addr = "0x0A434553C582cdD165AC7083CddB959d413e08F0"
 
 print(f"\n🔍 수집 시작: {token_addr}")
 start_time = time.time()
-data = collector.collect_all(token_addr, days=14)
+data = collector.collect_all(token_addr,None)
 collection_time = time.time() - start_time
 
 print(f"\n📊 수집된 데이터:")
