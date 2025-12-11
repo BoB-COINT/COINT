@@ -74,12 +74,13 @@ def analyze_token(request):
     새 token_addr를 받아서 전체 파이프라인 실행 후 Result 반환.
     """
     token_addr = request.data.get("token_addr")
+    reset = request.data.get("reset")
     if not token_addr:
         return Response({"detail": "token_addr is required"}, status=status.HTTP_400_BAD_REQUEST)
-
+    
     # 1) 이미 결과 있으면 재사용
     existing = Result.objects.filter(token_addr__iexact=token_addr).first()
-    if existing:
+    if existing and reset == False:
         # 바로 기존 결과 JSON 리턴 (result_detail과 동일 포맷)
         return Response({
             "token_addr": existing.token_addr,
@@ -90,11 +91,11 @@ def analyze_token(request):
             "exitInsight": existing.exitInsight,
             "honeypotMlInsight": existing.honeypotMlInsight,
             "honeypotDaInsight": existing.honeypotDaInsight,
-        })
+        })            
 
     # 2) 없으면 오케스트레이터 실행
     orch = PipelineOrchestrator()
-    ok = orch.execute(token_addr)
+    ok = orch.execute(token_addr,reset)
     if not ok:
         return Response({"detail": "pipeline failed"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

@@ -47,6 +47,41 @@ class PipelineOrchestrator:
         ExitMlResult.objects.all().delete()
 
         logger.info("Pipeline tables reset completed.")
+    
+    def _reset_all_tables(self,token_addr) -> None:
+        from api.models import (
+            TokenInfo,
+            PairEvent,
+            HolderInfo,
+            HoneypotDaResult,
+            HoneypotProcessedData,
+            HoneypotMlResult,
+            ExitProcessedDataInstance,
+            ExitProcessedDataStatic,
+            ExitMlResult,
+            Result
+        )
+
+        logger.info("Resetting pipeline tables (except Result) ...")
+
+        token_info = TokenInfo.objects.get(token_addr=token_addr)
+        #수집 단계
+        PairEvent.objects.filter(token_info=token_info).delete()
+        HolderInfo.objects.filter(token_info=token_info).delete()
+
+        # Honeypot 파이프라인
+        HoneypotDaResult.objects.filter(token_info=token_info).delete()
+        HoneypotProcessedData.objects.filter(token_info=token_info).delete()
+        HoneypotMlResult.objects.filter(token_info=token_info).delete()
+
+        # Exit 파이프라인
+        ExitProcessedDataInstance.objects.filter(token_info=token_info).delete()
+        ExitProcessedDataStatic.objects.filter(token_info=token_info).delete()
+        ExitMlResult.objects.filter(token_info=token_info).delete()
+        TokenInfo.objects.filter(token_addr=token_addr).delete()
+        Result.objects.filter(token_addr=token_addr).delete()
+
+        logger.info("Pipeline tables reset completed.!!!!!!^_^")
 
     """
     Orchestrates the complete analysis pipeline according to workflow design.
@@ -102,7 +137,7 @@ class PipelineOrchestrator:
         except Result.DoesNotExist:
             return None
 
-    def execute(self, token_addr: str, days: int | None = None) -> bool:
+    def execute(self, token_addr: str, reset,days: int | None = None,) -> bool:
         """
         Execute complete pipeline for given token.
         """
@@ -113,12 +148,16 @@ class PipelineOrchestrator:
         try:
             # 1) 이미 분석된 토큰인지 확인
             existing_result = self.check_existing_result(token_addr)
-            if existing_result:
+            if existing_result and reset != True:
                 logger.info(f"Token {token_addr} already analyzed, using cached result")
                 return True
 
-            # 0) Result 제외 나머지 테이블 초기화
-            self._reset_pipeline_tables()
+            # # 0) Result 제외 나머지 테이블 초기화
+            # self._reset_pipeline_tables()
+
+            if reset == True:
+                print("result reset!!!")
+                self._reset_all_tables(token_addr=token_addr)
 
             # 2) 토큰 메타데이터 수집
             token_info = self._collect_token_info(token_addr, days)
