@@ -61,9 +61,12 @@ class PipelineOrchestrator:
             ExitMlResult,
             Result
         )
+        from web3 import Web3
 
         logger.info("Resetting pipeline tables (except Result) ...")
 
+        if not TokenInfo.objects.filter(token_addr=token_addr).exists():
+            return
         token_info = TokenInfo.objects.get(token_addr=token_addr)
         #수집 단계
         PairEvent.objects.filter(token_info=token_info).delete()
@@ -142,8 +145,12 @@ class PipelineOrchestrator:
         Execute complete pipeline for given token.
         """
         # from api.models import AnalysisJob  # 아직 안 쓰면 주석으로만 두기
+        from web3 import Web3
+        from api.models import Result
+        from time import time,sleep
 
         logger.info(f"Starting pipeline for token {token_addr}")
+        token_addr = Web3.to_checksum_address(token_addr)
 
         try:
             # 1) 이미 분석된 토큰인지 확인
@@ -156,12 +163,23 @@ class PipelineOrchestrator:
             # self._reset_pipeline_tables()
 
             if reset == 1:
-                print("result reset!!!")
+                print("Update Result!!!")
                 self._reset_all_tables(token_addr=token_addr)
 
             # 2) 토큰 메타데이터 수집
-            token_info = self._collect_token_info(token_addr, days)
+            token_info, already = self._collect_token_info(token_addr, days)
+            
+            if already == True:
+                timeout = 600
+                start = time()
 
+                while not Result.objects.filter(token_addr=token_addr).exists():
+                    if time() - start > timeout:
+                        raise TimeoutError("Result creation timed out (over 10 minutes)")
+                    sleep(1)
+                
+                return True
+                
             # 3) Honeypot DA
             honeypot_da_result = self._run_honeypot_da(token_info)
 
@@ -226,13 +244,18 @@ class PipelineOrchestrator:
         return is_unformed
     
     def _collect_token_info(self, token_addr, days) -> 'TokenInfo':
+        from api.models import TokenInfo
         logger.info(f"Collecting token info for {token_addr}")
-
+        already = False
         try:
             token_data = self.token_collector.collect_all(token_addr, days)
-            token_info = self.token_collector.save_to_db(token_data)
+            if TokenInfo.objects.filter(token_addr=token_addr).exists():
+                token_info = TokenInfo.objects.get(token_addr=token_addr)
+                already = True
+            else:
+                token_info = self.token_collector.save_to_db(token_data)
             logger.info(f"Token info collected, token_addr_idx={token_info.id}")
-            return token_info
+            return token_info,already
 
         except KeyError as e:
             # LP가 없을 때 'pair_creator' KeyError 나오는 케이스 방어
