@@ -166,7 +166,7 @@ class PipelineOrchestrator:
             honeypot_da_result = self._run_honeypot_da(token_info)
 
             # 4) Unformed LP 검사
-            is_unformed = self._run_unformed_lp()
+            is_unformed = self._run_unformed_lp(token_info)
             
             # 5) 전처리
             self._preprocess_data(token_info, is_unformed)
@@ -218,8 +218,8 @@ class PipelineOrchestrator:
             logger.error(f"Pipeline failed for token {token_addr}: {e}")
             return False
 
-    def _run_unformed_lp(self):
-        result = self.unformedlp.run()
+    def _run_unformed_lp(self,token_info):
+        result = self.unformedlp.run(token_info)
 
         is_unformed = bool(result.get("is_unformed_lp"))
 

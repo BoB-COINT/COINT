@@ -158,7 +158,7 @@ class DetectUnformedLpAdapter:
         self.usd_threshold = usd_threshold
         self.swap_threshold = swap_threshold
 
-    def run(self) -> Dict[str, Any]:
+    def run(self,token_info) -> Dict[str, Any]:
         """
         Run Unformed LP detection for the single TokenInfo in DB.
         If Unformed, persist ExitMlResult with is_unformed_lp=1 and nullify other optional fields.
@@ -166,13 +166,13 @@ class DetectUnformedLpAdapter:
         from api.models import ExitMlResult
 
         result = self.detect_unformed_lp(
+            token_info,
             usd_threshold=self.usd_threshold,
             swap_threshold=self.swap_threshold,
         )
 
         if not result.get("is_unformed_lp"):
             return result
-
         token = result["token_info"]
         defaults = {
             "is_unformed_lp": 1,
