@@ -65,6 +65,7 @@ def result_detail(request, token_addr: str):
         "exitInsight": result.exitInsight,
         "honeypotMlInsight": ml_insight,
         "honeypotDaInsight": result.honeypotDaInsight,
+        "created_at": result.created_at
     }
     return JsonResponse(data)
 
