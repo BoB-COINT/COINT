@@ -110,6 +110,7 @@ def _parse_evt_log(raw) -> Dict:
 
 
 def detect_unformed_lp(
+    token_info,
     usd_threshold: float = 2000.0,
     swap_threshold: int = 2,
     price_eth_path: Optional[Path] = None,
@@ -130,13 +131,13 @@ def detect_unformed_lp(
     setup_django()
     from api.models import TokenInfo, PairEvent
 
-    token_qs = TokenInfo.objects.order_by("id")
-    count = token_qs.count()
-    if count == 0:
-        raise RuntimeError("No TokenInfo rows found.")
-    if count > 1:
-        raise RuntimeError("Multiple TokenInfo rows found; expected exactly one.")
-    token = token_qs.first()
+    # token_qs = TokenInfo.objects.order_by("id")
+    # count = token_qs.count()
+    # if count == 0:
+    #     raise RuntimeError("No TokenInfo rows found.")
+    # if count > 1:
+    #     raise RuntimeError("Multiple TokenInfo rows found; expected exactly one.")
+    token = token_info
     token_addr = (token.token_addr or "").lower()
 
     module_dir = Path(__file__).resolve().parent
