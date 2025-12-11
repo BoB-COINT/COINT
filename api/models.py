@@ -21,6 +21,11 @@ class TokenInfo(models.Model):
         db_index=True,
         help_text="Actual token contract address"
     )
+    is_processing = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Flag indicating if this token is currently being analyzed"
+    )
     pair_addr = models.CharField(
         max_length=42,
         help_text="Pair contract address"

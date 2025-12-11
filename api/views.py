@@ -7,9 +7,9 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from django.db import IntegrityError
+from django.db import transaction
 
-from .models import AnalysisJob, Result
+from .models import AnalysisJob, Result, TokenInfo
 
 import ast
 from django.http import JsonResponse
@@ -73,7 +73,7 @@ def result_detail(request, token_addr: str):
 def analyze_token(request):
     """
     새 token_addr를 받아서 전체 파이프라인 실행 후 Result 반환.
-    동시 요청 시 IntegrityError 처리.
+    동시 요청 시 is_processing 플래그로 처리 중 확인.
     """
     token_addr = request.data.get("token_addr")
     reset = request.data.get("reset", 0)
@@ -99,7 +99,21 @@ def analyze_token(request):
             "created_at": existing.created_at
         })
 
-    # 2) 새 분석 실행
+    # 2) 처리 중인지 확인
+    with transaction.atomic():
+        processing_token = TokenInfo.objects.filter(
+            token_addr__iexact=token_addr,
+            is_processing=True
+        ).first()
+
+        if processing_token:
+            return Response({
+                "status": "processing",
+                "message": "This token is currently being analyzed by another request. Please try again in a few minutes.",
+                "token_addr": token_addr
+            }, status=status.HTTP_202_ACCEPTED)
+
+    # 3) 새 분석 실행
     try:
         orch = PipelineOrchestrator()
         ok = orch.execute(token_addr, reset)
@@ -120,16 +134,6 @@ def analyze_token(request):
             "honeypotDaInsight": result.honeypotDaInsight,
             "created_at": result.created_at
         })
-
-    except IntegrityError as e:
-        error_msg = str(e).lower()
-        if 'unique constraint' in error_msg or 'token_addr' in error_msg:
-            return Response({
-                "status": "processing",
-                "message": "This token is currently being analyzed by another request. Please try again in a few minutes.",
-                "token_addr": token_addr
-            }, status=status.HTTP_202_ACCEPTED)
-        raise
 
     except Exception as e:
         return Response({"detail": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
