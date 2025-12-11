@@ -65,6 +65,7 @@ def result_detail(request, token_addr: str):
         "exitInsight": result.exitInsight,
         "honeypotMlInsight": ml_insight,
         "honeypotDaInsight": result.honeypotDaInsight,
+        "created_at": result.created_at
     }
     return JsonResponse(data)
 
@@ -91,6 +92,7 @@ def analyze_token(request):
             "exitInsight": existing.exitInsight,
             "honeypotMlInsight": existing.honeypotMlInsight,
             "honeypotDaInsight": existing.honeypotDaInsight,
+            "created_at":existing.created_at
         })            
 
     # 2) 없으면 오케스트레이터 실행
@@ -110,4 +112,5 @@ def analyze_token(request):
         "exitInsight": result.exitInsight,
         "honeypotMlInsight": result.honeypotMlInsight,
         "honeypotDaInsight": result.honeypotDaInsight,
+        "created_at":result.created_at
     })

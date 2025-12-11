@@ -344,30 +344,39 @@ class PipelineOrchestrator:
 
     def _run_honeypot_ml(self, token_info: 'TokenInfo') -> Dict[str, Any]:
         """
-        Step 7: Run honeypot ML analysis.
+        Step 7: Run honeypot ML analysis for *only this token*.
         """
         from api.models import HoneypotProcessedData
-        # job.status = 'analyzing_honeypot_ml'
-        # job.current_step = 'Running honeypot ML analysis'
-        # job.save()
 
-        logger.info(f"Running honeypot ML for token {token_info.id}")
+        logger.info(
+            f"Running honeypot ML for token_id={token_info.id} "
+            f"(token_addr={token_info.token_addr})"
+        )
 
         try:
-            qs = HoneypotProcessedData.objects.select_related("token_info").order_by("token_info_id")
-            for idx, hp in enumerate(qs.iterator(), start=1):
-                ti = hp.token_info
-                print("\n------------------------------------------------------------")
-                print(f"   Token Addr: {ti.token_addr}")
+            # ✅ 현재 token에 해당하는 전처리 레코드 1건만 사용
+            hp = HoneypotProcessedData.objects.select_related("token_info").get(
+                token_info=token_info
+            )
 
-                result = self.honeypot_ml.predict(hp)
-                logger.info(f"Honeypot ML completed: {result.get('is_honeypot', False)}")
+            result = self.honeypot_ml.predict(hp)
+            logger.info(
+                f"Honeypot ML completed for token_id={token_info.id}, "
+                f"is_honeypot={result.get('is_honeypot', False)}"
+            )
             return result
 
+        except HoneypotProcessedData.DoesNotExist:
+            logger.error(
+                f"No HoneypotProcessedData found for token_id={token_info.id} "
+                f"(token_addr={token_info.token_addr})"
+            )
+            raise
+
         except Exception as e:
-            # job.error_step = 'analyzing_honeypot_ml'
             logger.error(f"Failed to run honeypot ML: {e}")
             raise
+
 
     def _run_exit_ml(self, token_info: 'TokenInfo') -> Dict[str, Any]:
         """
