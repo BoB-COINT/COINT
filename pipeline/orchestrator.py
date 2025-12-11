@@ -118,7 +118,7 @@ class PipelineOrchestrator:
                 return True
 
             # 0) Result 제외 나머지 테이블 초기화
-            self._reset_pipeline_tables()
+            # self._reset_pipeline_tables()
 
             # 2) 토큰 메타데이터 수집
             token_info = self._collect_token_info(token_addr, days)
