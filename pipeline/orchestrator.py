@@ -212,23 +212,10 @@ class PipelineOrchestrator:
                 exit_ml_result,
             )
 
-            # 9) 처리 완료 플래그 해제
-            token_info.is_processing = False
-            token_info.save()
-
             return True
 
         except Exception as e:
             logger.error(f"Pipeline failed for token {token_addr}: {e}")
-            # 에러 발생 시에도 플래그 해제
-            from api.models import TokenInfo
-            try:
-                token_obj = TokenInfo.objects.filter(token_addr__iexact=token_addr).first()
-                if token_obj:
-                    token_obj.is_processing = False
-                    token_obj.save()
-            except:
-                pass
             return False
 
     def _run_unformed_lp(self,token_info):
