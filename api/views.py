@@ -80,7 +80,7 @@ def analyze_token(request):
     
     # 1) 이미 결과 있으면 재사용
     existing = Result.objects.filter(token_addr__iexact=token_addr).first()
-    if existing and reset == False:
+    if existing and reset == 0:
         # 바로 기존 결과 JSON 리턴 (result_detail과 동일 포맷)
         return Response({
             "token_addr": existing.token_addr,

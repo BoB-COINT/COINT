@@ -9,7 +9,7 @@ django.setup()
 
 orch = PipelineOrchestrator()
 token_addr = sys.argv[1]
-reset = True
+reset = 0
 success = orch.execute(token_addr,reset)
 
 print("Success:", success)

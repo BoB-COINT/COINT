@@ -148,14 +148,14 @@ class PipelineOrchestrator:
         try:
             # 1) 이미 분석된 토큰인지 확인
             existing_result = self.check_existing_result(token_addr)
-            if existing_result and reset != True:
+            if existing_result and reset == 0:
                 logger.info(f"Token {token_addr} already analyzed, using cached result")
                 return True
             
             # # 0) Result 제외 나머지 테이블 초기화
             # self._reset_pipeline_tables()
 
-            if reset == True:
+            if reset == 1:
                 print("result reset!!!")
                 self._reset_all_tables(token_addr=token_addr)
 
