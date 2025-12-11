@@ -112,5 +112,5 @@ def analyze_token(request):
         "exitInsight": result.exitInsight,
         "honeypotMlInsight": result.honeypotMlInsight,
         "honeypotDaInsight": result.honeypotDaInsight,
-        "created_at":existing.created_at
+        "created_at":result.created_at
     })
