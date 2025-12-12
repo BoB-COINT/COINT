@@ -29,7 +29,7 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    "bob-coint.site",      # ngrok
+    "bob-coint.site"
 ]
 
 
@@ -177,19 +177,18 @@ LOGGING = {
 
 # CORS settings for frontend integration
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
+    'http://localhost:3000',  # React development server
     'http://127.0.0.1:3000',
-    'http://bob-coint.site',
-    'https://bob-coint.site',
-    'http://www.bob-coint.site',
-    'https://www.bob-coint.site'
+    "http://bob-coint.site",
+    "https://bob-coint.site"
 ]
 
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
 CSRF_TRUSTED_ORIGINS = [
-    "https://*.ngrok-free.dev",
-    "https://bob-coint.site",
-    "http://bob-coint.site"
-]
+      "http://bob-coint.site",
+      "https://bob-coint.site"
+  ]
 
 
 CORS_ALLOW_CREDENTIALS = True
