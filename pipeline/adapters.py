@@ -96,55 +96,51 @@ class DataCollectorAdapter:
         """
         from api.models import TokenInfo, PairEvent, HolderInfo
 
-        # 1. Save TokenInfo (use get_or_create + set is_processing flag)
+        # 1. Save TokenInfo
         token_info_data = data['token_info']
-        token_info, created = TokenInfo.objects.get_or_create(
+        token_info = TokenInfo.objects.create(
             token_addr=token_info_data['token_addr'],
-            defaults={
-                'pair_addr': token_info_data['pair_addr'],
-                'pair_creator': token_info_data['pair_creator'],
-                'token_create_ts': token_info_data['token_create_ts'],
-                'lp_create_ts': token_info_data['lp_create_ts'],
-                'pair_idx': token_info_data['pair_idx'],
-                'pair_type': token_info_data['pair_type'],
-                'token_creator_addr': token_info_data['token_creator_addr'],
-                'symbol': token_info_data.get('symbol'),
-                'name': token_info_data.get('name'),
-                'holder_cnt': token_info_data.get('holder_cnt'),
-                'is_processing': True
-            }
+            pair_addr=token_info_data['pair_addr'],
+            pair_creator=token_info_data['pair_creator'],
+            token_create_ts=token_info_data['token_create_ts'],
+            lp_create_ts=token_info_data['lp_create_ts'],
+            pair_idx=token_info_data['pair_idx'],
+            pair_type=token_info_data['pair_type'],
+            token_creator_addr=token_info_data['token_creator_addr'],
+            symbol=token_info_data.get('symbol'),
+            name=token_info_data.get('name'),
+            holder_cnt=token_info_data.get('holder_cnt')
         )
 
-        # 2. Save PairEvents (bulk) - only if newly created
-        if created:
-            pair_events = [
-                PairEvent(
-                    token_info=token_info,
-                    timestamp=event['timestamp'],
-                    block_number=event['block_number'],
-                    tx_hash=event['tx_hash'],
-                    tx_from=event['tx_from'],
-                    tx_to=event['tx_to'],
-                    evt_idx=event['evt_idx'],
-                    evt_type=event['evt_type'],
-                    evt_log=event['evt_log'],
-                    lp_total_supply=event['lp_total_supply']
-                )
-                for event in data['pair_events']
-            ]
-            PairEvent.objects.bulk_create(pair_events, batch_size=1000)
+        # 2. Save PairEvents (bulk)
+        pair_events = [
+            PairEvent(
+                token_info=token_info,
+                timestamp=event['timestamp'],
+                block_number=event['block_number'],
+                tx_hash=event['tx_hash'],
+                tx_from=event['tx_from'],
+                tx_to=event['tx_to'],
+                evt_idx=event['evt_idx'],
+                evt_type=event['evt_type'],
+                evt_log=event['evt_log'],
+                lp_total_supply=event['lp_total_supply']
+            )
+            for event in data['pair_events']
+        ]
+        PairEvent.objects.bulk_create(pair_events, batch_size=1000)
 
-            # 3. Save HolderInfo (bulk)
-            holders = [
-                HolderInfo(
-                    token_info=token_info,
-                    holder_addr=holder['holder_addr'],
-                    balance=holder['balance'],
-                    rel_to_total=holder['rel_to_total']
-                )
-                for holder in data['holders']
-            ]
-            HolderInfo.objects.bulk_create(holders, batch_size=1000)
+        # 3. Save HolderInfo (bulk)
+        holders = [
+            HolderInfo(
+                token_info=token_info,
+                holder_addr=holder['holder_addr'],
+                balance=holder['balance'],
+                rel_to_total=holder['rel_to_total']
+            )
+            for holder in data['holders']
+        ]
+        HolderInfo.objects.bulk_create(holders, batch_size=1000)
 
         return token_info
 
