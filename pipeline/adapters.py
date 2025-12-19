@@ -755,22 +755,22 @@ class ResultAggregatorAdapter:
 
         if is_unformed:
             honeypot_type['level'] = "no_market"
-        elif honeypot_score <= 0.02:
+        elif honeypot_score <= 0.04:
             honeypot_type['level'] = "Safe"
         elif honeypot_score <= 0.48999999999999977:
             honeypot_type['level'] = "Caution"
-        elif honeypot_score <= 0.979:
+        elif honeypot_score <= 0.978:
             honeypot_type['level'] = "Warning"
         else:
             honeypot_type['level'] = "Critical"
 
         if is_unformed:
             exit_type['level'] = "no_market"
-        elif exit_score <= 0.02:
+        elif exit_score <= 0.0855:
             exit_type['level'] = "Safe"
         elif exit_score <= 0.780502200126648:
             exit_type['level'] = "Caution"
-        elif exit_score <= 0.995:
+        elif exit_score <= 0.969:
             exit_type['level'] = "Warning"
         else:
             exit_type['level'] = "Critical"
